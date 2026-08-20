@@ -1,2 +1,1 @@
-"""Optional training and high-throughput rollout integrations."""
-
+"""Optional inference and high-throughput rollout integrations."""

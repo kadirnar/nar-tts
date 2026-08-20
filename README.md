@@ -1,14 +1,11 @@
 # Nar TTS
 
-Nar TTS is a voice-cloning text-to-speech project built with
-[Qwen3](https://huggingface.co/Qwen) and the
-[Mimi](https://huggingface.co/kyutai/mimi) audio codec. It generates Mimi audio
-tokens from text, then decodes them into speech. The project is based on the
-[Orpheus TTS](https://github.com/canopyai/Orpheus-TTS) recipe.
+Nar TTS is a Qwen3 + Mimi voice-cloning TTS project. It supports quality-gated
+batch inference, expressive controls, supervised training, and GRPO.
 
-## Installation
+## Install
 
-Nar TTS requires Python 3.10 and a CUDA 12.x environment.
+Python 3.10 and a CUDA 12.x environment are required.
 
 ```bash
 git clone https://github.com/kadirnar/nar-tts.git
@@ -17,87 +14,85 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Log in with `hf auth login` if you need access to private Hugging Face models or
-datasets. For WavLM-Large + ECAPA speaker scoring, also install:
+Install the speaker evaluator for default quality inference and GRPO:
 
 ```bash
-pip install -e ".[speaker-quality]"
+pip install -e ".[evaluation]"
 ```
 
 ## Inference
 
-```python
-from nar_tts.inference.infer import NarTTS
-
-engine = NarTTS(
-    checkpoint="checkpoints/checkpoint-171622",
-    tokenizer_name="Qwen/Qwen3-0.6B",
-    device="cuda:0",
-)
-
-engine.clone(
-    text="Hello, this is a cloned voice.",
-    ref_wav="andrew.wav",
-    ref_text="all sorts of things, mainly browsing.",
-    output_path="output.wav",
-)
-```
-
-For batch synthesis, edit `CKPT` and `JOBS` in the inference script, then run:
+Set the checkpoint and device once in
+[`inference.yaml`](nar_tts/configs/inference.yaml), then run:
 
 ```bash
-python nar_tts/inference/infer.py
+nar-tts infer \
+  --text "Bugün güzel bir gün." \
+  --reference reference.wav \
+  --reference-text "Bu ses klibinin doğru metni." \
+  --output output.wav \
+  --language tr
 ```
 
-## Dataset preparation
+The default flow generates two candidates, verifies ASR and speaker identity,
+and tries up to four candidates only when needed. It also writes a JSON quality
+report. Batch input uses `--manifest jobs.jsonl`; long text adds `--long-form`.
 
-The preprocessing commands convert audio and text into Parquet files containing
-model-ready `input_ids`:
+Emotion controls require a checkpoint trained with the same control schema:
 
 ```bash
-python nar_tts/preprocessing/encode_textqa.py
-python nar_tts/preprocessing/encode_pretrain.py
-python nar_tts/preprocessing/encode_finetune.py
+nar-tts infer \
+  --text "Bugün seni çok özledim." \
+  --reference reference.wav \
+  --reference-text "Bu ses klibinin doğru metni." \
+  --output sad.wav \
+  --emotion sadness --intensity 0.9 --delivery crying_speech \
+  --event '{"type":"sob","after_word":2,"duration":"short"}'
 ```
 
-Configure large pretraining jobs in
-[`nar_tts/configs/preprocess_pretrain.yaml`](nar_tts/configs/preprocess_pretrain.yaml).
-The pipeline can stream source shards, upload outputs to Hugging Face, and resume
-interrupted runs. Use a separate config file with:
+## Data and quality
 
 ```bash
-python nar_tts/preprocessing/encode_pretrain.py --config /path/to/preprocess.yaml
+nar-tts audit-data --manifest raw.jsonl \
+  --accepted clean.jsonl --rejected rejected.jsonl
+
+nar-tts codec-check --audio "samples/*.wav" --output codec-report.json
+
+nar-tts encode-expressive --manifest clean.jsonl \
+  --output expressive.parquet
+
+nar-tts evaluate --manifest generations.jsonl \
+  --output evaluation.json --listening-manifest listening.jsonl
+
+nar-tts distill --reports "infer_out/*.json" \
+  --output verified-sft.jsonl
 ```
 
-Check the Mimi encode/decode round trip with:
-
-```bash
-python tests/test_mimi.py
-```
+Existing large preprocessing jobs still use
+[`preprocess_pretrain.yaml`](nar_tts/configs/preprocess_pretrain.yaml).
 
 ## Training
 
 ```bash
-# Pretraining (8-GPU FSDP)
 accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
   nar_tts/training/pretrain.py
 
-# Supervised fine-tuning (8-GPU FSDP)
 accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
-  nar_tts/training/finetune.py \
-  --config nar_tts/configs/finetune.yaml
+  nar_tts/training/finetune.py --config nar_tts/configs/finetune.yaml
 
-# GRPO (single GPU)
-accelerate launch --config_file nar_tts/configs/launch/single_gpu.yaml \
-  nar_tts/training/grpo.py \
-  --config nar_tts/configs/grpo_intelligibility.yaml
+torchrun --standalone --nproc-per-node=8 \
+  nar_tts/training/grpo.py --config nar_tts/configs/grpo.yaml
 ```
 
-Additional configs cover LoRA, multi-GPU training, and vLLM/SGLang rollouts.
-See the [GRPO and post-training guide](docs/grpo.md) for details.
+There is one quality-first GRPO config. LLaMA Factory is inference-only; its
+config is under `nar_tts/configs/llama_factory/` and no dataset registry is
+needed.
 
-## Acknowledgements
+See [quality](docs/quality.md), [emotion](docs/emotion.md),
+[GRPO](docs/grpo.md), and the [2026 TTS review](docs/tts_2026.md).
 
-- [Orpheus TTS](https://github.com/canopyai/Orpheus-TTS)
-- [Kyutai Mimi](https://huggingface.co/kyutai/mimi)
-- [Qwen3](https://huggingface.co/Qwen)
+## Credits
+
+[Orpheus TTS](https://github.com/canopyai/Orpheus-TTS),
+[Qwen3](https://huggingface.co/Qwen), and
+[Mimi](https://huggingface.co/kyutai/mimi).

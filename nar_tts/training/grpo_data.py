@@ -1,11 +1,18 @@
 """Dataset adapters for post-pretraining speech GRPO."""
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
 
 from datasets import Dataset, IterableDataset, load_dataset
 
+from nar_tts.core.controls import (
+    SpeechControl,
+    controls_from_columns,
+    render_controlled_text,
+    strip_control_markup,
+)
 from nar_tts.core.generation import parse_audio_completion
 from nar_tts.core.tokens import TokenLayout
 
@@ -22,6 +29,13 @@ class PreparedGRPOExample:
     reference_text: str
     target_duration_seconds: float
     language: str
+    emotion: str = "neutral"
+    intensity: float = 0.0
+    delivery: str = "neutral"
+    valence: float | None = None
+    arousal: float | None = None
+    events: tuple[dict, ...] = ()
+    hard_case: bool = False
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -31,6 +45,13 @@ class PreparedGRPOExample:
             "reference_text": self.reference_text,
             "target_duration_seconds": self.target_duration_seconds,
             "language": self.language,
+            "emotion": self.emotion,
+            "intensity": self.intensity,
+            "delivery": self.delivery,
+            "valence": self.valence,
+            "arousal": self.arousal,
+            "events": list(self.events),
+            "hard_case": self.hard_case,
         }
 
 
@@ -46,6 +67,42 @@ def _text_prompt(text: str, tokenizer, layout: TokenLayout) -> list[int]:
         raise GRPODataError("target text is empty")
     text_ids = tokenizer(text.strip(), add_special_tokens=False).input_ids
     return [layout.soh, *text_ids, layout.eot, layout.eoh, layout.soa, layout.sos]
+
+
+def _events(value) -> tuple[dict, ...]:
+    if value in (None, ""):
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise GRPODataError("events column is not valid JSON") from error
+    if not isinstance(value, (list, tuple)):
+        raise GRPODataError("events must be a JSON/list array")
+    return tuple(dict(item) for item in value)
+
+
+def _control_from_row(row: dict, columns: dict) -> SpeechControl:
+    return controls_from_columns(
+        emotion=_column(row, columns, "emotion"),
+        intensity=_column(row, columns, "intensity"),
+        delivery=_column(row, columns, "delivery"),
+        valence=_column(row, columns, "valence"),
+        arousal=_column(row, columns, "arousal"),
+        events=_events(_column(row, columns, "events")),
+    )
+
+
+def _controlled_fields(control: SpeechControl, hard_case=False) -> dict:
+    return {
+        "emotion": control.emotion,
+        "intensity": control.intensity,
+        "delivery": control.delivery,
+        "valence": control.valence,
+        "arousal": control.arousal,
+        "events": tuple(event.asdict() for event in control.events),
+        "hard_case": bool(hard_case),
+    }
 
 
 def _valid_audio_ids(ids, layout: TokenLayout, field_name: str) -> list[int]:
@@ -83,7 +140,9 @@ def split_tts_training_sequence(
     completion = parse_audio_completion(ids[sos_index + 1 :], layout)
     if not completion.valid:
         raise GRPODataError("input_ids has invalid or unterminated target audio")
-    target_text = tokenizer.decode(ids[1:eot_index], skip_special_tokens=True).strip()
+    target_text = strip_control_markup(
+        tokenizer.decode(ids[1:eot_index], skip_special_tokens=True)
+    ).strip()
     if not target_text:
         raise GRPODataError("input_ids decodes to an empty target transcript")
     return PreparedGRPOExample(
@@ -107,6 +166,8 @@ def prepare_grpo_example(
     columns = dataset_config.get("columns", {})
     frame_rate = float(dataset_config.get("frame_rate", 12.5))
     language = str(_column(row, columns, "language", "") or "")
+    control = _control_from_row(row, columns)
+    hard_case = bool(_column(row, columns, "hard_case", False))
 
     if mode == "tts_tokens":
         input_ids = _column(row, columns, "input_ids")
@@ -127,6 +188,7 @@ def prepare_grpo_example(
                 else example.target_duration_seconds
             ),
             language=language,
+            **_controlled_fields(control, hard_case),
         )
 
     target_text = _column(row, columns, "text")
@@ -139,12 +201,15 @@ def prepare_grpo_example(
 
     if mode == "text":
         return PreparedGRPOExample(
-            prompt=_text_prompt(target_text, tokenizer, layout),
+            prompt=_text_prompt(
+                render_controlled_text(target_text, control), tokenizer, layout
+            ),
             target_text=target_text,
             reference_audio_ids=[],
             reference_text=reference_text,
             target_duration_seconds=duration,
             language=language,
+            **_controlled_fields(control, hard_case),
         )
 
     if mode == "prompt_ids":
@@ -164,6 +229,7 @@ def prepare_grpo_example(
             reference_text=reference_text,
             target_duration_seconds=duration,
             language=language,
+            **_controlled_fields(control, hard_case),
         )
 
     if mode == "voice_clone_tokens":
@@ -172,7 +238,7 @@ def prepare_grpo_example(
         )
         if not reference_text:
             raise GRPODataError("voice_clone_tokens requires reference_text")
-        combined_text = f"{reference_text} {target_text}".strip()
+        combined_text = f"{reference_text} {render_controlled_text(target_text, control)}".strip()
         prompt = _text_prompt(combined_text, tokenizer, layout)
         return PreparedGRPOExample(
             prompt=[*prompt, *reference_audio],
@@ -181,6 +247,7 @@ def prepare_grpo_example(
             reference_text=reference_text,
             target_duration_seconds=duration,
             language=language,
+            **_controlled_fields(control, hard_case),
         )
 
     raise GRPODataError(
@@ -209,6 +276,10 @@ def _load_source(config: dict):
 def load_grpo_dataset(config: dict, tokenizer, layout: TokenLayout):
     """Load, optionally stream, and adapt a dataset without materializing audio."""
     dataset = _load_source(config)
+    hard_case_column = config.get("columns", {}).get("hard_case")
+    hard_case_multiplier = int(config.get("hard_case_multiplier", 1))
+    if hard_case_multiplier < 1:
+        raise GRPODataError("dataset.hard_case_multiplier must be at least 1")
     # Project away raw audio and every unrelated column before iteration. Audio
     # features can otherwise trigger expensive decode work even in text-only
     # streaming GRPO.
@@ -218,11 +289,25 @@ def load_grpo_dataset(config: dict, tokenizer, layout: TokenLayout):
     available_columns = getattr(dataset, "column_names", None)
     if source_columns:
         if available_columns:
-            missing = sorted(set(source_columns) - set(available_columns))
+            required_names = {
+                config.get("columns", {}).get(name)
+                for name in {
+                    "tts_tokens": ("input_ids",),
+                    "text": ("text",),
+                    "prompt_ids": ("prompt_ids", "text"),
+                    "voice_clone_tokens": (
+                        "text",
+                        "reference_text",
+                        "reference_audio_ids",
+                    ),
+                }[config.get("mode", "tts_tokens")]
+            }
+            missing = sorted(required_names - set(available_columns))
             if missing:
                 raise GRPODataError(
-                    "configured dataset columns are missing: " + ", ".join(missing)
+                    "required dataset columns are missing: " + ", ".join(missing)
                 )
+            source_columns = sorted(set(source_columns) & set(available_columns))
         dataset = dataset.select_columns(source_columns)
     if config.get("shuffle", True):
         seed = int(config.get("seed", 42))
@@ -242,6 +327,23 @@ def load_grpo_dataset(config: dict, tokenizer, layout: TokenLayout):
             dataset = dataset.take(max_samples)
         else:
             dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    if hard_case_column and hard_case_multiplier > 1:
+        if isinstance(dataset, IterableDataset):
+            if hard_case_column in (dataset.column_names or []):
+                raise GRPODataError(
+                    "hard-case oversampling needs a non-streaming dataset"
+                )
+        elif hard_case_column in dataset.column_names:
+            base_indices = list(range(len(dataset)))
+            hard_indices = [
+                index
+                for index, value in enumerate(dataset[hard_case_column])
+                if bool(value)
+            ]
+            dataset = dataset.select(
+                base_indices + hard_indices * (hard_case_multiplier - 1)
+            )
 
     drop_invalid = config.get("on_invalid", "error") == "drop"
 
@@ -269,6 +371,13 @@ def load_grpo_dataset(config: dict, tokenizer, layout: TokenLayout):
                 "reference_text": "",
                 "target_duration_seconds": -1.0,
                 "language": "",
+                "emotion": "neutral",
+                "intensity": 0.0,
+                "delivery": "neutral",
+                "valence": None,
+                "arousal": None,
+                "events": [],
+                "hard_case": False,
                 "_valid": False,
             }
 

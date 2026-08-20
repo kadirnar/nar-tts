@@ -17,7 +17,7 @@ from nar_tts.core.trainer import RatioTrainer
 # stream keeps the LM's language ability while a speech stream teaches TTS, the mix
 # decaying from text-heavy toward pure speech. All knobs live in the YAML below.
 # Launch:  accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
-#                            -m nar_tts.training.pretrain
+#                            nar_tts/training/pretrain.py
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pretrain.yaml"
 with open(CONFIG_PATH) as f:
     cfg = yaml.safe_load(f)

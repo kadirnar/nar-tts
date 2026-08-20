@@ -2,9 +2,11 @@ import math
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
+from datasets import Dataset
 
 from nar_tts.core.generation import (
     AudioTokenLogitsProcessor,
@@ -28,6 +30,7 @@ from nar_tts.training.grpo_config import (
     validate_grpo_config,
 )
 from nar_tts.training.grpo_data import (
+    load_grpo_dataset,
     prepare_grpo_example,
     split_tts_training_sequence,
 )
@@ -142,9 +145,9 @@ class GenerationConstraintTest(unittest.TestCase):
 
         grammar = audio_grammar_arguments(self.layout, 1, 2)
         sglang_scores = scores.repeat(1, 1)
-        NarAudioSGLangLogitsProcessor()(sglang_scores, [
-            {GRAMMAR_ARGUMENT: grammar, "__req__": Request()}
-        ])
+        NarAudioSGLangLogitsProcessor()(
+            sglang_scores, [{GRAMMAR_ARGUMENT: grammar, "__req__": Request()}]
+        )
         torch.testing.assert_close(sglang_scores[0], expected)
 
     def test_constrained_log_probs_match_small_uniform_action_spaces(self):
@@ -177,6 +180,25 @@ class GenerationConstraintTest(unittest.TestCase):
 
 
 class GRPODataTest(unittest.TestCase):
+    def test_hard_cases_are_oversampled_after_the_base_limit(self):
+        layout = TokenLayout(base=200, eot=2, num_codebooks=2, codebook_size=8)
+        tokenizer = FakeTokenizer()
+        sequence = layout.tts_sequence([ord("x")], np.array([[1, 2], [3, 4]]))
+        source = Dataset.from_dict(
+            {"input_ids": [sequence, sequence], "hard_case": [False, True]}
+        )
+        config = {
+            "mode": "tts_tokens",
+            "columns": {"input_ids": "input_ids", "hard_case": "hard_case"},
+            "shuffle": False,
+            "hard_case_multiplier": 3,
+            "on_invalid": "error",
+        }
+        with patch("nar_tts.training.grpo_data._load_source", return_value=source):
+            dataset = load_grpo_dataset(config, tokenizer, layout)
+        self.assertEqual(len(dataset), 4)
+        self.assertEqual(sum(dataset["hard_case"]), 3)
+
     def test_split_pretraining_row_without_raw_audio(self):
         layout = TokenLayout(base=200, eot=2, num_codebooks=2, codebook_size=8)
         tokenizer = FakeTokenizer()
@@ -216,6 +238,36 @@ class GRPODataTest(unittest.TestCase):
         )
         self.assertEqual(clone_example.prompt[-len(reference) :], reference)
         self.assertEqual(clone_example.reference_text, "hello")
+
+    def test_expressive_columns_are_serialized_but_asr_target_stays_lexical(self):
+        layout = TokenLayout(base=500, eot=2, num_codebooks=2, codebook_size=8)
+        tokenizer = FakeTokenizer()
+        example = prepare_grpo_example(
+            {
+                "text": "Bugün seni düşündüm.",
+                "emotion": "sadness",
+                "intensity": 0.9,
+                "delivery": "crying_speech",
+                "events": '[{"type":"sob","after_word":1}]',
+            },
+            tokenizer,
+            layout,
+            {
+                "mode": "text",
+                "columns": {
+                    "text": "text",
+                    "emotion": "emotion",
+                    "intensity": "intensity",
+                    "delivery": "delivery",
+                    "events": "events",
+                },
+            },
+        )
+        prompt_text = tokenizer.decode(example.prompt[1:-4])
+        self.assertIn("<nar_control emotion=sadness", prompt_text)
+        self.assertIn("<nar_event type=sob", prompt_text)
+        self.assertEqual(example.target_text, "Bugün seni düşündüm.")
+        self.assertEqual(example.emotion, "sadness")
 
 
 class RewardMathTest(unittest.TestCase):
@@ -321,67 +373,69 @@ class RewardMathTest(unittest.TestCase):
         )
         self.assertEqual(suite.codec.calls, 1)
         self.assertAlmostEqual(reward[0], 0.625)
+        functions, weights = suite.reward_functions()
+        components = [
+            function(
+                completion_ids=[completion],
+                target_text=["test"],
+                reference_audio_ids=[layout.codes_to_ids(codes)],
+            )[0]
+            for function in functions
+        ]
+        self.assertEqual(suite.codec.calls, 1)
+        self.assertEqual(weights, [0.75, 0.25])
+        self.assertEqual(components, [0.5, 1.0])
 
 
 class ScenarioConfigTest(unittest.TestCase):
-    def test_all_grpo_scenarios_validate(self):
+    def test_single_quality_grpo_config_validates(self):
         config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        expected_world_sizes = {
-            "grpo_intelligibility.yaml": 1,
-            "grpo_multireward.yaml": 8,
-            "grpo_sglang.yaml": 1,
-            "grpo_style_fast.yaml": 1,
-            "grpo_style_slow.yaml": 1,
-            "grpo_text_streaming.yaml": 1,
-            "grpo_vllm.yaml": 1,
-        }
-        for filename, world_size in expected_world_sizes.items():
-            with self.subTest(filename=filename):
-                config = load_grpo_config(config_dir / filename)
-                derived = validate_grpo_config(config, world_size=world_size)
-                self.assertGreater(derived["max_completion_length"], 1)
-                args = _training_args(
-                    config,
-                    derived,
-                    FakeTokenizer(),
-                    world_size=world_size,
-                    layout=TokenLayout(base=10, eot=2),
-                )
-                self.assertAlmostEqual(args.warmup_steps, 0.03)
-                self.assertEqual(args.get_warmup_steps(1000), 30)
+        paths = sorted(config_dir.glob("grpo*.yaml"))
+        self.assertEqual([path.name for path in paths], ["grpo.yaml"])
 
-    def test_quality_configs_never_select_a_small_asr_or_wavlm_model(self):
-        config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        for path in config_dir.glob("grpo_*.yaml"):
-            config = load_grpo_config(path)
-            asr = config["rewards"].get("asr", {})
-            if asr.get("enabled", True):
-                self.assertEqual(asr.get("model"), QWEN3_ASR_MODEL_ID)
-            if config["rewards"]["weights"].get("speaker", 0) > 0:
-                speaker = config["rewards"]["speaker"]
-                self.assertEqual(speaker.get("backend"), "espnet")
-                self.assertEqual(speaker.get("model"), WAVLM_SPEAKER_MODEL_ID)
+        config = load_grpo_config(paths[0])
+        derived = validate_grpo_config(config, world_size=8)
+        self.assertGreater(derived["max_completion_length"], 1)
+        self.assertEqual(config["grpo"]["num_generations"], 8)
+        self.assertEqual(config["rewards"]["asr"]["model"], QWEN3_ASR_MODEL_ID)
+        self.assertEqual(config["rewards"]["speaker"]["backend"], "espnet")
+        self.assertEqual(config["rewards"]["speaker"]["model"], WAVLM_SPEAKER_MODEL_ID)
+        self.assertGreater(config["rewards"]["weights"]["intelligibility"], 0)
+        self.assertGreater(config["rewards"]["weights"]["speaker"], 0)
+        self.assertGreater(config["rewards"]["weights"]["duration"], 0)
+        self.assertGreater(config["rewards"]["weights"]["naturalness"], 0)
+        self.assertGreater(config["rewards"]["weights"]["speaker_drift"], 0)
+        self.assertEqual(
+            config["grpo"]["multi_objective_aggregation"], "normalize_then_sum"
+        )
+
+        args = _training_args(
+            config,
+            derived,
+            FakeTokenizer(),
+            world_size=8,
+            layout=TokenLayout(base=10, eot=2),
+        )
+        self.assertAlmostEqual(args.warmup_steps, 0.03)
+        self.assertEqual(args.get_warmup_steps(1000), 30)
 
     def test_small_asr_checkpoint_is_rejected(self):
         config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        config = load_grpo_config(config_dir / "grpo_intelligibility.yaml")
+        config = load_grpo_config(config_dir / "grpo.yaml")
         config["rewards"]["asr"]["model"] = "Qwen/Qwen3-ASR-0.6B-hf"
         with self.assertRaisesRegex(GRPOConfigError, "Qwen3-ASR-1.7B"):
-            validate_grpo_config(config, world_size=1)
+            validate_grpo_config(config, world_size=8)
 
     def test_unsloth_is_kept_out_of_the_incompatible_grpo_environment(self):
         config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        config = load_grpo_config(config_dir / "grpo_intelligibility.yaml")
+        config = load_grpo_config(config_dir / "grpo.yaml")
         config["model"]["loader"] = "unsloth"
         with self.assertRaisesRegex(GRPOConfigError, "finetune_unsloth"):
-            validate_grpo_config(config, world_size=1)
+            validate_grpo_config(config, world_size=8)
 
     def test_invalid_group_size_fails_before_training(self):
         config_path = (
-            Path(__file__).resolve().parents[1]
-            / "nar_tts"
-            / "configs"
-            / "grpo_multireward.yaml"
+            Path(__file__).resolve().parents[1] / "nar_tts" / "configs" / "grpo.yaml"
         )
         config = load_grpo_config(config_path)
         with self.assertRaises(GRPOConfigError):

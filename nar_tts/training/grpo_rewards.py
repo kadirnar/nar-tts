@@ -2,7 +2,6 @@
 
 import hashlib
 import math
-import unicodedata
 from collections import OrderedDict
 
 import numpy as np
@@ -15,6 +14,14 @@ from nar_tts.core.audio import MIMI_MODEL_ID, MimiCodec
 from nar_tts.core.generation import parse_audio_completion
 from nar_tts.core.model_ids import QWEN3_ASR_MODEL_ID, WAVLM_SPEAKER_MODEL_ID
 from nar_tts.core.tokens import TokenLayout
+from nar_tts.evaluation.metrics import (
+    analyze_waveform,
+    event_alignment_score,
+    normalize_transcript,
+    prosody_similarity,
+    speaker_drift_score,
+    transcript_error_rate,
+)
 
 QWEN3_ASR_LANGUAGE_NAMES = {
     "ar": "Arabic",
@@ -48,55 +55,6 @@ QWEN3_ASR_LANGUAGE_NAMES = {
     "tr": "Turkish",
     "vi": "Vietnamese",
 }
-
-
-def normalize_transcript(text: str, character_level: bool = False) -> str:
-    """Apply a deterministic multilingual normalization for ASR comparison."""
-    text = unicodedata.normalize("NFKC", str(text)).casefold()
-    normalized = []
-    for character in text:
-        category = unicodedata.category(character)
-        normalized.append(" " if category[0] in {"P", "S", "Z"} else character)
-    text = " ".join("".join(normalized).split())
-    return "".join(text.split()) if character_level else text
-
-
-def levenshtein_distance(reference, hypothesis) -> int:
-    """Memory-efficient Levenshtein distance for words or characters."""
-    reference, hypothesis = list(reference), list(hypothesis)
-    if len(reference) < len(hypothesis):
-        reference, hypothesis = hypothesis, reference
-    previous = list(range(len(hypothesis) + 1))
-    for row, ref_item in enumerate(reference, start=1):
-        current = [row]
-        for column, hyp_item in enumerate(hypothesis, start=1):
-            current.append(
-                min(
-                    current[-1] + 1,
-                    previous[column] + 1,
-                    previous[column - 1] + (ref_item != hyp_item),
-                )
-            )
-        previous = current
-    return previous[-1]
-
-
-def transcript_error_rate(
-    reference: str, hypothesis: str, metric: str = "cer"
-) -> float:
-    """Compute CER or WER after the same normalization on both strings."""
-    if metric not in {"cer", "wer"}:
-        raise ValueError("metric must be 'cer' or 'wer'")
-    character_level = metric == "cer"
-    reference = normalize_transcript(reference, character_level=character_level)
-    hypothesis = normalize_transcript(hypothesis, character_level=character_level)
-    reference_units = list(reference) if character_level else reference.split()
-    hypothesis_units = list(hypothesis) if character_level else hypothesis.split()
-    if not reference_units:
-        return 0.0 if not hypothesis_units else 1.0
-    return levenshtein_distance(reference_units, hypothesis_units) / len(
-        reference_units
-    )
 
 
 def error_rate_reward(error_rate: float, alpha: float = 3.0) -> float:
@@ -206,6 +164,11 @@ class SpeechRewardSuite:
         self.speaker_processor = None
         self.speaker_model = None
         self.reference_cache = OrderedDict()
+        self.reference_wave_cache = OrderedDict()
+        self.emotion_verifier = None
+        self.event_verifier = None
+        self._last_batch_key = None
+        self._last_component_values = None
         self.resamplers = {}
 
     @property
@@ -217,6 +180,11 @@ class SpeechRewardSuite:
             "duration": float(configured.get("duration", 0.0)),
             "speed": float(configured.get("speed", 0.0)),
             "format": float(configured.get("format", 0.0)),
+            "naturalness": float(configured.get("naturalness", 0.0)),
+            "prosody": float(configured.get("prosody", 0.0)),
+            "emotion": float(configured.get("emotion", 0.0)),
+            "event": float(configured.get("event", 0.0)),
+            "speaker_drift": float(configured.get("speaker_drift", 0.0)),
         }
 
     def _get_codec(self):
@@ -463,7 +431,7 @@ class SpeechRewardSuite:
             except ImportError as error:
                 raise ImportError(
                     "the high-quality speaker reward requires ESPnet, "
-                    "espnet-model-zoo, and s3prl; install `nar-tts[speaker-quality]`"
+                    "espnet-model-zoo, and s3prl; install `nar-tts[evaluation]`"
                 ) from error
             if model_id != WAVLM_SPEAKER_MODEL_ID:
                 raise ValueError(
@@ -538,35 +506,55 @@ class SpeechRewardSuite:
         values = np.asarray(audio_ids, dtype=np.int32)
         return hashlib.blake2b(values.tobytes(), digest_size=16).digest()
 
-    def _speaker_scores(self, generated_waves, reference_audio_ids):
+    def _reference_waves(self, reference_audio_ids):
+        """Decode each unique ground-truth/reference clip once per worker."""
         config = self.config.get("speaker", {})
-        if not config.get("enabled", False):
-            return [None] * len(generated_waves)
-        codec = self._get_codec()
-        cache_limit = max(0, int(config.get("reference_cache_size", 2048)))
+        cache_limit = max(1, int(config.get("reference_cache_size", 2048)))
         keys = [self._audio_key(ids) if ids else None for ids in reference_audio_ids]
-        if not any(key is not None for key in keys):
-            return [None] * len(generated_waves)
         missing = {}
-        for key, ids in zip(keys, reference_audio_ids):
-            if key is not None and key not in self.reference_cache:
+        for key, ids in zip(keys, reference_audio_ids, strict=True):
+            if key is not None and key not in self.reference_wave_cache:
                 missing.setdefault(key, ids)
         if missing:
             parsed = [
                 parse_audio_completion([*ids, self.layout.eos_speech], self.layout)
                 for ids in missing.values()
             ]
-            valid_items = [
-                (key, item.codes) for key, item in zip(missing, parsed) if item.valid
+            valid = [
+                (key, item.codes)
+                for key, item in zip(missing, parsed, strict=True)
+                if item.valid
             ]
-            if valid_items:
-                waves = codec.decode_batch([codes for _, codes in valid_items])
-                embeddings = self._speaker_embeddings(waves)
-                for (key, _), embedding in zip(valid_items, embeddings):
-                    self.reference_cache[key] = embedding
-                    self.reference_cache.move_to_end(key)
-                    while len(self.reference_cache) > cache_limit:
-                        self.reference_cache.popitem(last=False)
+            if valid:
+                waves = self._get_codec().decode_batch([codes for _, codes in valid])
+                for (key, _), wave in zip(valid, waves, strict=True):
+                    self.reference_wave_cache[key] = wave
+                    self.reference_wave_cache.move_to_end(key)
+                    while len(self.reference_wave_cache) > cache_limit:
+                        self.reference_wave_cache.popitem(last=False)
+        return [self.reference_wave_cache.get(key) for key in keys]
+
+    def _speaker_scores(self, generated_waves, reference_audio_ids):
+        config = self.config.get("speaker", {})
+        if not config.get("enabled", False):
+            return [None] * len(generated_waves)
+        cache_limit = max(0, int(config.get("reference_cache_size", 2048)))
+        keys = [self._audio_key(ids) if ids else None for ids in reference_audio_ids]
+        if not any(key is not None for key in keys):
+            return [None] * len(generated_waves)
+        reference_waves = self._reference_waves(reference_audio_ids)
+        missing_items = [
+            (key, wave)
+            for key, wave in zip(keys, reference_waves, strict=True)
+            if key is not None and wave is not None and key not in self.reference_cache
+        ]
+        if missing_items:
+            embeddings = self._speaker_embeddings([wave for _, wave in missing_items])
+            for (key, _), embedding in zip(missing_items, embeddings, strict=True):
+                self.reference_cache[key] = embedding
+                self.reference_cache.move_to_end(key)
+                while len(self.reference_cache) > cache_limit:
+                    self.reference_cache.popitem(last=False)
 
         generated_embeddings = self._speaker_embeddings(generated_waves)
         scores = []
@@ -581,6 +569,145 @@ class SpeechRewardSuite:
                 scores.append(
                     float(min(1.0, max(float(config.get("minimum", 0.0)), similarity)))
                 )
+        return scores
+
+    def _speaker_drift_scores(self, generated_waves, reference_audio_ids):
+        config = self.config.get("speaker_drift", {})
+        if not config.get("enabled", False):
+            return [None] * len(generated_waves)
+        reference_waves = self._reference_waves(reference_audio_ids)
+        keys = [self._audio_key(ids) if ids else None for ids in reference_audio_ids]
+        # Ensure reference embeddings use the same cache as utterance speaker reward.
+        self._speaker_scores(generated_waves, reference_audio_ids)
+        sample_rate = self._get_codec().sampling_rate
+        window = max(1, round(float(config.get("window_seconds", 2.5)) * sample_rate))
+        hop = max(1, round(float(config.get("hop_seconds", 1.25)) * sample_rate))
+        all_windows = []
+        ranges = []
+        for wave in generated_waves:
+            start_index = len(all_windows)
+            if len(wave) <= window:
+                all_windows.append(wave)
+            else:
+                starts = list(range(0, max(1, len(wave) - window + 1), hop))
+                if starts[-1] + window < len(wave):
+                    starts.append(len(wave) - window)
+                all_windows.extend(wave[start : start + window] for start in starts)
+            ranges.append((start_index, len(all_windows)))
+        embeddings = self._speaker_embeddings(all_windows) if all_windows else []
+        scores = []
+        for key, reference_wave, (start, end) in zip(
+            keys, reference_waves, ranges, strict=True
+        ):
+            reference = self.reference_cache.get(key)
+            if reference is None or reference_wave is None:
+                scores.append(None)
+                continue
+            value = speaker_drift_score(
+                reference.numpy(),
+                [embedding.numpy() for embedding in embeddings[start:end]],
+            )
+            scores.append(value["score"])
+        return scores
+
+    def _naturalness_scores(self, generated_waves):
+        sample_rate = self._get_codec().sampling_rate
+        return [
+            analyze_waveform(wave, sample_rate).technical_quality
+            for wave in generated_waves
+        ]
+
+    def _prosody_scores(self, generated_waves, reference_audio_ids):
+        reference_waves = self._reference_waves(reference_audio_ids)
+        sample_rate = self._get_codec().sampling_rate
+        scores = []
+        for generated, reference in zip(
+            generated_waves, reference_waves, strict=True
+        ):
+            if reference is None:
+                scores.append(None)
+                continue
+            scores.append(
+                prosody_similarity(
+                    analyze_waveform(generated, sample_rate),
+                    analyze_waveform(reference, sample_rate),
+                )
+            )
+        return scores
+
+    def _classification_verifier(self, section: str):
+        attribute = f"{section}_verifier"
+        verifier = getattr(self, attribute)
+        if verifier is not None:
+            return verifier
+        from nar_tts.evaluation.verifiers import AudioClassificationVerifier
+
+        config = dict(self.config.get(section, {}))
+        config.pop("enabled", None)
+        for name in ("window_seconds", "hop_seconds", "threshold"):
+            config.pop(name, None)
+        verifier = AudioClassificationVerifier(**config)
+        setattr(self, attribute, verifier)
+        return verifier
+
+    def _emotion_scores(self, generated_waves, emotions):
+        config = self.config.get("emotion", {})
+        if not config.get("enabled", False):
+            return [None] * len(generated_waves)
+        predictions = self._classification_verifier("emotion").classify(
+            generated_waves, self._get_codec().sampling_rate
+        )
+        return [
+            float(
+                {
+                    item["label"].casefold(): item["score"] for item in prediction
+                }.get(str(target).casefold(), 0.0)
+            )
+            for prediction, target in zip(predictions, emotions, strict=True)
+        ]
+
+    def _event_scores(self, generated_waves, event_targets, target_texts):
+        config = self.config.get("event", {})
+        if not config.get("enabled", False):
+            return [None] * len(generated_waves)
+        sample_rate = self._get_codec().sampling_rate
+        window = max(1, round(float(config.get("window_seconds", 1.0)) * sample_rate))
+        hop = max(1, round(float(config.get("hop_seconds", 0.5)) * sample_rate))
+        threshold = float(config.get("threshold", 0.35))
+        verifier = self._classification_verifier("event")
+        scores = []
+        for wave, targets, text in zip(
+            generated_waves, event_targets, target_texts, strict=True
+        ):
+            segments, starts = [], []
+            for start in range(0, max(1, len(wave) - window + 1), hop):
+                segment = wave[start : start + window]
+                if len(segment) < window:
+                    segment = np.pad(segment, (0, window - len(segment)))
+                segments.append(segment)
+                starts.append(start / sample_rate)
+            predictions = verifier.classify(segments, sample_rate)
+            detected = []
+            for start, prediction in zip(starts, predictions, strict=True):
+                if prediction:
+                    best = max(prediction, key=lambda item: item["score"])
+                    if best["score"] >= threshold:
+                        detected.append(
+                            {"type": best["label"], "start_seconds": start}
+                        )
+            expected = []
+            duration = len(wave) / sample_rate
+            word_count = max(1, len(str(text).split()))
+            for target in targets or ():
+                position = target.get("at_seconds")
+                if position is None and target.get("after_word") is not None:
+                    position = duration * int(target["after_word"]) / word_count
+                if position is None:
+                    position = duration / 2
+                expected.append(
+                    {"type": target.get("type", ""), "start_seconds": position}
+                )
+            scores.append(event_alignment_score(expected, detected).f1)
         return scores
 
     def _expected_duration(
@@ -649,6 +776,8 @@ class SpeechRewardSuite:
         reference_text=None,
         target_duration_seconds=None,
         language=None,
+        emotion=None,
+        events=None,
         log_extra=None,
         log_metric=None,
         **kwargs,
@@ -659,6 +788,8 @@ class SpeechRewardSuite:
         reference_text = reference_text or [""] * count
         target_duration_seconds = target_duration_seconds or [-1.0] * count
         language = language or [""] * count
+        emotion = emotion or ["neutral"] * count
+        events = events or [[] for _ in range(count)]
         parsed = [parse_audio_completion(ids, self.layout) for ids in completion_ids]
         valid_indices = [index for index, item in enumerate(parsed) if item.valid]
         generated_seconds = [item.num_frames / self.frame_rate for item in parsed]
@@ -693,6 +824,51 @@ class SpeechRewardSuite:
             )
             for destination, source in enumerate(valid_indices):
                 speaker[source] = speaker_values[destination]
+
+        naturalness = [None] * count
+        if valid_indices and self.weights["naturalness"] > 0:
+            values = self._naturalness_scores(
+                [waves_by_index[index] for index in valid_indices]
+            )
+            for destination, source in enumerate(valid_indices):
+                naturalness[source] = values[destination]
+
+        prosody = [None] * count
+        if valid_indices and self.weights["prosody"] > 0:
+            values = self._prosody_scores(
+                [waves_by_index[index] for index in valid_indices],
+                [reference_audio_ids[index] for index in valid_indices],
+            )
+            for destination, source in enumerate(valid_indices):
+                prosody[source] = values[destination]
+
+        emotion_scores = [None] * count
+        if valid_indices and self.weights["emotion"] > 0:
+            values = self._emotion_scores(
+                [waves_by_index[index] for index in valid_indices],
+                [emotion[index] for index in valid_indices],
+            )
+            for destination, source in enumerate(valid_indices):
+                emotion_scores[source] = values[destination]
+
+        event_scores = [None] * count
+        if valid_indices and self.weights["event"] > 0:
+            values = self._event_scores(
+                [waves_by_index[index] for index in valid_indices],
+                [events[index] for index in valid_indices],
+                [target_text[index] for index in valid_indices],
+            )
+            for destination, source in enumerate(valid_indices):
+                event_scores[source] = values[destination]
+
+        speaker_drift = [None] * count
+        if valid_indices and self.weights["speaker_drift"] > 0:
+            values = self._speaker_drift_scores(
+                [waves_by_index[index] for index in valid_indices],
+                [reference_audio_ids[index] for index in valid_indices],
+            )
+            for destination, source in enumerate(valid_indices):
+                speaker_drift[source] = values[destination]
 
         duration = [None] * count
         duration_config = self.config.get("duration", {})
@@ -729,7 +905,15 @@ class SpeechRewardSuite:
             "duration": duration,
             "speed": speed,
             "format": [float(item.valid) for item in parsed],
+            "naturalness": naturalness,
+            "prosody": prosody,
+            "emotion": emotion_scores,
+            "event": event_scores,
+            "speaker_drift": speaker_drift,
         }
+        self._last_batch_key = self._batch_key(completion_ids, target_text)
+        self._last_component_values = component_values
+        self._last_valid = [item.valid for item in parsed]
         weights = self.weights
         rewards = []
         for index, item in enumerate(parsed):
@@ -765,3 +949,45 @@ class SpeechRewardSuite:
             if present_nll:
                 log_metric("speech/asr_nll", sum(present_nll) / len(present_nll))
         return rewards
+
+    @staticmethod
+    def _batch_key(completion_ids, target_text):
+        digest = hashlib.blake2b(digest_size=16)
+        for ids, text in zip(completion_ids, target_text, strict=True):
+            values = np.asarray(ids, dtype=np.int32)
+            digest.update(len(values).to_bytes(8, "little"))
+            digest.update(values.tobytes())
+            digest.update(str(text).encode("utf-8"))
+            digest.update(b"\0")
+        return digest.digest()
+
+    def component_reward(self, name: str, **kwargs):
+        """Return one shared-batch component for TRL normalize-then-sum."""
+        key = self._batch_key(kwargs["completion_ids"], kwargs["target_text"])
+        if key != self._last_batch_key or self._last_component_values is None:
+            self(**kwargs)
+        values = self._last_component_values[name]
+        return [
+            self.invalid_reward if not valid else value
+            for value, valid in zip(values, self._last_valid, strict=True)
+        ]
+
+    def reward_functions(self):
+        """Return active component callables and matching YAML weights."""
+        active = [(name, weight) for name, weight in self.weights.items() if weight > 0]
+        return (
+            [SpeechComponentReward(self, name) for name, _ in active],
+            [weight for _, weight in active],
+        )
+
+
+class SpeechComponentReward:
+    """Named callable that shares SpeechRewardSuite's one decoded batch."""
+
+    def __init__(self, suite: SpeechRewardSuite, component: str):
+        self.suite = suite
+        self.component = component
+        self.__name__ = f"speech_{component}_reward"
+
+    def __call__(self, **kwargs):
+        return self.suite.component_reward(self.component, **kwargs)

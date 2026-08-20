@@ -1,5 +1,4 @@
-# Research-quality 8-GPU scenario: the CER+summed-NLL reward and hyperparameters
-# follow LLM-TTS-GRPO, augmented with WavLM speaker preservation and duration.
+# One quality-first GRPO recipe with separately normalized speech metrics.
 
 model:
   checkpoint: "checkpoints/checkpoint-171622"
@@ -21,6 +20,13 @@ dataset:
     input_ids: input_ids
     language: null
     target_duration_seconds: null
+    emotion: emotion
+    intensity: intensity
+    delivery: delivery
+    valence: valence
+    arousal: arousal
+    events: events
+    hard_case: hard_case
   streaming: false
   max_samples: 4000
   max_prompt_tokens: 2048
@@ -28,6 +34,7 @@ dataset:
   seed: 42
   on_invalid: drop
   preprocess_workers: 1
+  hard_case_multiplier: 4
 
 peft:
   enabled: true
@@ -62,7 +69,9 @@ grpo:
   epsilon: 0.2
   epsilon_high: 0.2
   importance_sampling_level: token
-  scale_rewards: group
+  # Normalize each metric per prompt group before the weighted sum.
+  multi_objective_aggregation: normalize_then_sum
+  scale_rewards: batch
   loss_type: dapo
   mask_truncated_completions: true
   entropy_coef: 0.0
@@ -71,11 +80,16 @@ grpo:
 rewards:
   invalid_reward: 0.0
   weights:
-    intelligibility: 0.75
-    speaker: 0.20
+    intelligibility: 0.60
+    speaker: 0.15
     duration: 0.05
     speed: 0.0
     format: 0.0
+    naturalness: 0.08
+    prosody: 0.05
+    emotion: 0.0
+    event: 0.0
+    speaker_drift: 0.07
   codec:
     model: kyutai/mimi
     revision: null
@@ -114,9 +128,30 @@ rewards:
   speed:
     direction: fast
     max_seconds: 12.0
+  speaker_drift:
+    enabled: true
+    window_seconds: 2.5
+    hop_seconds: 1.25
+  # These stay at weight 0 until a held-out Turkish synthetic-speech audit
+  # approves the selected classifiers. The reward implementation is ready.
+  emotion:
+    enabled: false
+    model: null
+    revision: null
+    device: auto
+    label_map: {}
+  event:
+    enabled: false
+    model: null
+    revision: null
+    device: auto
+    label_map: {}
+    window_seconds: 1.0
+    hop_seconds: 0.5
+    threshold: 0.35
 
 training:
-  output_dir: "checkpoints_grpo_multireward"
+  output_dir: "checkpoints_grpo"
   epochs: 1
   max_steps: -1
   per_device_train_batch_size: 1
@@ -150,7 +185,7 @@ logging:
   enabled: true
   report_to: wandb
   project: nar-tts-grpo
-  run_name: grpo-cer-nll-speaker-g8
+  run_name: grpo-quality-g8
   entity: null
   log_completions: true
   num_completions_to_print: 2

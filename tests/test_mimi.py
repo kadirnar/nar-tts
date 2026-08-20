@@ -9,7 +9,7 @@ from nar_tts.core.tokens import AUDIO_OFFSET, CODEBOOK_SIZE, NUM_CODEBOOKS, Toke
 
 # A quick standalone sanity check — confirms the codec loads and the flatten/
 # unflatten layout in core/tokens.py matches what Mimi produces, before launching
-# a long encode/train job.  Run:  python -m tests.test_mimi
+# a long encode/train job. Run: python tests/test_mimi.py
 
 
 def make_sine(seconds, sr, freq=440.0):

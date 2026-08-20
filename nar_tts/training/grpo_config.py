@@ -14,36 +14,17 @@ class GRPOConfigError(ValueError):
     """Raised when a GRPO scenario is internally inconsistent."""
 
 
-def _merge_config(base: dict, override: dict) -> dict:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_config(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def load_grpo_config(path, _seen=None) -> dict:
+def load_grpo_config(path) -> dict:
     path = Path(path).expanduser().resolve()
-    seen = set() if _seen is None else _seen
-    if path in seen:
-        raise GRPOConfigError(f"cyclic GRPO config inheritance at {path}")
-    seen.add(path)
     with path.open(encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
     if not isinstance(config, dict):
         raise GRPOConfigError(f"{path} must contain a YAML mapping")
-    parent = config.pop("extends", None)
-    if parent:
-        parent_path = Path(parent).expanduser()
-        if not parent_path.is_absolute():
-            parent_path = path.parent / parent_path
-        base = load_grpo_config(parent_path, _seen=seen)
-        base.pop("_config_path", None)
-        config = _merge_config(base, config)
+    if "extends" in config:
+        raise GRPOConfigError(
+            "GRPO uses one self-contained config; extends is unsupported"
+        )
     config["_config_path"] = str(path)
-    seen.remove(path)
     return config
 
 
@@ -155,9 +136,26 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
     if dataset.get("on_invalid", "error") not in {"error", "drop"}:
         raise GRPOConfigError("dataset.on_invalid must be 'error' or 'drop'")
 
+    reward_names = (
+        "intelligibility",
+        "speaker",
+        "duration",
+        "speed",
+        "format",
+        "naturalness",
+        "prosody",
+        "emotion",
+        "event",
+        "speaker_drift",
+    )
+    unknown_weights = sorted(set(weights) - set(reward_names))
+    if unknown_weights:
+        raise GRPOConfigError(
+            "unknown reward weights: " + ", ".join(unknown_weights)
+        )
     active_weights = {
         name: float(weights.get(name, 1.0 if name == "intelligibility" else 0.0))
-        for name in ("intelligibility", "speaker", "duration", "speed", "format")
+        for name in reward_names
     }
     if any(weight < 0 for weight in active_weights.values()):
         raise GRPOConfigError("reward weights cannot be negative")
@@ -183,6 +181,30 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
         raise GRPOConfigError(
             "the speaker reward requires rewards.speaker.enabled: true"
         )
+    if active_weights["speaker_drift"] > 0 and not rewards.get("speaker_drift", {}).get(
+        "enabled", False
+    ):
+        raise GRPOConfigError(
+            "the speaker-drift reward requires rewards.speaker_drift.enabled: true"
+        )
+    if active_weights["speaker_drift"] > 0 and not rewards.get("speaker", {}).get(
+        "enabled", False
+    ):
+        raise GRPOConfigError(
+            "the speaker-drift reward uses the configured speaker backend"
+        )
+    for name in ("emotion", "event"):
+        if active_weights[name] > 0:
+            section = rewards.get(name, {})
+            if not section.get("enabled", False) or not section.get("model"):
+                raise GRPOConfigError(
+                    f"the {name} reward requires rewards.{name}.enabled and model"
+                )
+            column_name = "events" if name == "event" else "emotion"
+            if not columns.get(column_name):
+                raise GRPOConfigError(
+                    f"the {name} reward requires dataset.columns.{column_name}"
+                )
     if active_weights["speed"] > 0 and rewards.get("speed", {}).get(
         "direction", "fast"
     ) not in {"fast", "slow"}:
@@ -203,6 +225,15 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
         "smooth_log",
     }:
         raise GRPOConfigError("rewards.duration.mode must be binary or smooth_log")
+    aggregation = grpo.get("multi_objective_aggregation", "sum_then_normalize")
+    if aggregation not in {"sum_then_normalize", "normalize_then_sum"}:
+        raise GRPOConfigError(
+            "grpo.multi_objective_aggregation must be sum_then_normalize or normalize_then_sum"
+        )
+    if len([weight for weight in active_weights.values() if weight > 0]) > 1 and aggregation != "normalize_then_sum":
+        raise GRPOConfigError(
+            "multi-reward Nar GRPO requires normalize_then_sum so components are normalized separately"
+        )
 
     speaker = rewards.get("speaker", {})
     speaker_backend = speaker.get("backend", "espnet")
@@ -217,6 +248,14 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
                 "the ESPnet speaker backend must use the checked high-quality "
                 f"WavLM-Large checkpoint {WAVLM_SPEAKER_MODEL_ID!r}"
             )
+    if int(speaker.get("reference_cache_size", 2048)) < 1:
+        raise GRPOConfigError("rewards.speaker.reference_cache_size must be positive")
+    drift = rewards.get("speaker_drift", {})
+    if active_weights["speaker_drift"] > 0 and (
+        float(drift.get("window_seconds", 2.5)) <= 0
+        or float(drift.get("hop_seconds", 1.25)) <= 0
+    ):
+        raise GRPOConfigError("speaker-drift window and hop must be positive")
 
     model_loader = model.get("loader", "transformers")
     if model_loader != "transformers":

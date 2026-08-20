@@ -1,0 +1,119 @@
+# One quality-first inference recipe. Expensive verifiers are lazy-loaded.
+
+model:
+  checkpoint: checkpoints/checkpoint-171622
+  tokenizer: Qwen/Qwen3-0.6B
+  revision: null
+  tokenizer_revision: null
+  device: cuda:0
+  dtype: bfloat16
+  attn_implementation: sdpa
+  trust_remote_code: false
+  low_cpu_mem_usage: true
+
+codec:
+  model: kyutai/mimi
+  revision: null
+  dtype: bfloat16
+
+frontend:
+  language: null
+  expand_numbers: true
+  expand_abbreviations: true
+  lexicon: null
+
+generation:
+  frame_rate: 12.5
+  min_audio_seconds: 0.4
+  max_audio_seconds: 30.0
+  batch_size: 4
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 0
+  repetition_penalty: 1.1
+  seed: 42
+
+best_of_n:
+  initial: 2
+  maximum: 4
+
+quality_gate:
+  require_asr: true
+  require_speaker: true
+  require_emotion: false
+  require_events: false
+  maximum_cer: 0.12
+  minimum_technical_quality: 0.55
+  maximum_repetition_similarity: 0.995
+  minimum_duration_ratio: 0.55
+  maximum_duration_ratio: 1.80
+  minimum_speaker_similarity: 0.45
+  minimum_emotion_confidence: 0.35
+  minimum_event_f1: 0.50
+  weights:
+    intelligibility: 0.50
+    technical: 0.20
+    duration: 0.10
+    speaker: 0.10
+    emotion: 0.05
+    event: 0.05
+
+verification:
+  # A different model family from the Qwen3-ASR training reward.
+  asr:
+    enabled: true
+    model: openai/whisper-large-v3-turbo
+    revision: null
+    device: auto
+    dtype: bfloat16
+    batch_size: 4
+    language: null
+    attn_implementation: sdpa
+    compile: false
+    compile_mode: reduce-overhead
+  speaker:
+    enabled: true
+    backend: espnet
+    model: espnet/voxcelebs12_ecapa_wavlm_joint
+    revision: null
+    device: auto
+    dtype: float32
+    batch_size: 1
+    reference_cache_size: 256
+  # Enable only with held-out, synthetic-speech-validated classifiers.
+  emotion:
+    enabled: false
+    model: null
+    revision: null
+    device: auto
+    label_map: {}
+  events:
+    enabled: false
+    model: null
+    revision: null
+    device: auto
+    label_map: {}
+    window_seconds: 1.0
+    hop_seconds: 0.5
+    threshold: 0.35
+
+acceleration:
+  kv_cache: true
+  tf32: true
+  compile_model: false
+  compile_codec: false
+  compile_mode: reduce-overhead
+
+cache:
+  reference_entries: 64
+
+long_form:
+  max_characters: 260
+  carry_previous_chunk: true
+  context_audio_seconds: 4.0
+  crossfade_milliseconds: 40.0
+
+artifacts:
+  write_reports: true
+  save_candidates: true
+  hard_cases: infer_out/hard_cases.jsonl

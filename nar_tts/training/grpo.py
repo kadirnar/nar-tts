@@ -1,13 +1,9 @@
-"""Config-driven GRPO post-training for Nar TTS.
+"""Quality-focused GRPO post-training for Nar TTS.
 
-Launch on one GPU::
+Launch with the checked-in eight-GPU recipe::
 
-    python -m nar_tts.training.grpo --config nar_tts/configs/grpo_intelligibility.yaml
-
-Launch on multiple GPUs with the matching Accelerate scenario::
-
-    accelerate launch --config_file nar_tts/configs/launch/multi_gpu.yaml \
-        -m nar_tts.training.grpo --config nar_tts/configs/grpo_multireward.yaml
+    torchrun --standalone --nproc-per-node=8 \
+        nar_tts/training/grpo.py --config nar_tts/configs/grpo.yaml
 """
 
 import argparse
@@ -34,7 +30,7 @@ from nar_tts.training.grpo_rewards import SpeechRewardSuite
 from nar_tts.training.grpo_trainer import NarGRPOTrainer
 
 DEFAULT_CONFIG = (
-    Path(__file__).resolve().parents[1] / "configs" / "grpo_intelligibility.yaml"
+    Path(__file__).resolve().parents[1] / "configs" / "grpo.yaml"
 )
 
 
@@ -145,6 +141,33 @@ def _training_args(
     runtime = config.get("runtime", {})
     rollout = config.get("rollout", {})
     rollout_backend = rollout.get("backend", "transformers")
+    configured_reward_weights = config.get("rewards", {}).get("weights", {})
+    reward_names = (
+        "intelligibility",
+        "speaker",
+        "duration",
+        "speed",
+        "format",
+        "naturalness",
+        "prosody",
+        "emotion",
+        "event",
+        "speaker_drift",
+    )
+    reward_weights = [
+        float(
+            configured_reward_weights.get(
+                name, 1.0 if name == "intelligibility" else 0.0
+            )
+        )
+        for name in reward_names
+        if float(
+            configured_reward_weights.get(
+                name, 1.0 if name == "intelligibility" else 0.0
+            )
+        )
+        > 0
+    ]
     workers = dataloader_worker_count(
         runtime.get("dataloader_workers", "auto"), world_size=world_size
     )
@@ -236,6 +259,10 @@ def _training_args(
         "epsilon_high": float(grpo.get("epsilon_high", grpo.get("epsilon", 0.2))),
         "importance_sampling_level": grpo.get("importance_sampling_level", "token"),
         "scale_rewards": grpo.get("scale_rewards", "group"),
+        "multi_objective_aggregation": grpo.get(
+            "multi_objective_aggregation", "normalize_then_sum"
+        ),
+        "reward_weights": reward_weights,
         "loss_type": grpo.get("loss_type", "dapo"),
         "mask_truncated_completions": bool(
             grpo.get("mask_truncated_completions", True)
@@ -323,6 +350,7 @@ def train(config: dict):
         "frame_rate", config.get("generation", {}).get("frame_rate", 12.5)
     )
     rewards = SpeechRewardSuite(layout, reward_config)
+    reward_functions, _ = rewards.reward_functions()
     args = _training_args(
         config, derived, tokenizer, actual_world_size, layout=layout
     )
@@ -342,7 +370,7 @@ def train(config: dict):
     trainer = NarGRPOTrainer(
         model=model,
         args=args,
-        reward_funcs=rewards,
+        reward_funcs=reward_functions,
         train_dataset=train_dataset,
         processing_class=tokenizer,
         peft_config=trainer_peft_config,
