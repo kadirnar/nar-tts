@@ -7,17 +7,17 @@ from datasets import load_dataset
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from transformers import TrainingArguments
 
-from vyvonext.core.data import make_collator
-from vyvonext.core.trainer import FSDPTrainer
+from nar_tts.core.data import make_collator
+from nar_tts.core.trainer import FSDPTrainer
 
 # Config (hardcoded; no CLI args). Continues from a pretrained checkpoint (whose
 # vocab is already resized) on a small single-voice set encoded by
 # preprocessing/encode_finetune.py. Pure TTS: no text mixing, no ratio schedule.
-# Launch:  accelerate launch --config_file vyvonext/configs/accelerate_config.yaml \
-#                            -m vyvonext.training.finetune
-PRETRAINED_CKPT = "/home/microway/kadirnar/github/OrpheusPlus/checkpoints/checkpoint-171622"
+# Launch:  accelerate launch --config_file nar_tts/configs/accelerate_config.yaml \
+#                            -m nar_tts.training.finetune
+PRETRAINED_CKPT = "checkpoints/checkpoint-171622"
 FT_DATASET = "/scratch/kadirnar/elevenlabs-en-ft-mimi32/data"
-OUTPUT_DIR = "/home/microway/kadirnar/github/OrpheusPlus/checkpoints_ft_elevenlabs_en"
+OUTPUT_DIR = "checkpoints_ft_elevenlabs_en"
 PROJECT_NAME = "qwen3-ja-en-tts_finetune"
 RUN_NAME = "ft-elevenlabs-en-iP95p4"
 

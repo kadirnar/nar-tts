@@ -9,15 +9,15 @@ from datasets import load_dataset
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from transformers import AutoTokenizer, TrainingArguments
 
-from vyvonext.core.tokens import TokenLayout
-from vyvonext.core.data import GradualRatioDataset, make_collator
-from vyvonext.core.trainer import RatioTrainer
+from nar_tts.core.data import GradualRatioDataset, make_collator
+from nar_tts.core.tokens import TokenLayout
+from nar_tts.core.trainer import RatioTrainer
 
 # Pretrain a Qwen3 + Mimi TTS model with a decaying text/speech mixture: a text-QA
 # stream keeps the LM's language ability while a speech stream teaches TTS, the mix
 # decaying from text-heavy toward pure speech. All knobs live in the YAML below.
-# Launch:  accelerate launch --config_file vyvonext/configs/accelerate_config.yaml \
-#                            -m vyvonext.training.pretrain
+# Launch:  accelerate launch --config_file nar_tts/configs/accelerate_config.yaml \
+#                            -m nar_tts.training.pretrain
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pretrain.yaml"
 with open(CONFIG_PATH) as f:
     cfg = yaml.safe_load(f)

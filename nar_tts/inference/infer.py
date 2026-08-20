@@ -4,18 +4,18 @@ import soundfile as sf
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from vyvonext.core.tokens import TokenLayout
-from vyvonext.core.audio import MimiCodec
+from nar_tts.core.audio import MimiCodec
+from nar_tts.core.tokens import TokenLayout
 
 # Config (hardcoded; no CLI args). Single-GPU, multilingual voice cloning: given a
 # reference clip (+ its transcript) and a target text in ANY language, the model
 # speaks the target in the reference voice by pure continuation:
 #   prompt = [SOH] ref_text+target_text [eot] [EOH] [SOA] [SOS] <ref audio codes>
 #   model continues -> <target audio codes> [EOS_SPEECH]
-# Run:  python -m vyvonext.inference.infer
-CKPT = "/home/microway/kadirnar/github/OrpheusPlus/checkpoints/checkpoint-171622"
+# Run:  python -m nar_tts.inference.infer
+CKPT = "checkpoints/checkpoint-171622"
 TOKENIZER_NAME = "Qwen/Qwen3-0.6B"
-OUTPUT_DIR = "/home/microway/kadirnar/github/OrpheusPlus/infer_out"
+OUTPUT_DIR = "infer_out"
 DEVICE = "cuda:0"
 
 # Generation
@@ -26,9 +26,9 @@ TOP_P = 0.9
 REPETITION_PENALTY = 1.1
 
 # Jobs: (out_name, ref_wav, ref_text, target_text). Any language works.
-REF_EN = "/home/microway/kadirnar/github/OrpheusPlus/andrew_00.wav"
+REF_EN = "andrew_00.wav"
 REF_EN_TEXT = "all sorts of things, but mainly just browsing FaceTime and streaming most of all."
-REF_JA = "/home/microway/kadirnar/github/OrpheusPlus/irodori-tts-v2-demo-2.wav"
+REF_JA = "irodori-tts-v2-demo-2.wav"
 REF_JA_TEXT = "ごめん、少し遅れてしまった。終電電車がとても混んでいたんだ。へいでも、ちゃんと来られてよかった。"
 
 JOBS = [
@@ -39,7 +39,7 @@ JOBS = [
 ]
 
 
-class VyvoNextTTS:
+class NarTTS:
     """Voice-cloning TTS engine: continues a text prompt into Mimi speech tokens."""
 
     def __init__(self, checkpoint=CKPT, tokenizer_name=TOKENIZER_NAME, device=DEVICE):
@@ -80,7 +80,7 @@ class VyvoNextTTS:
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     torch.cuda.set_device(DEVICE)
-    engine = VyvoNextTTS()
+    engine = NarTTS()
     for name, ref_wav, ref_text, target in JOBS:
         out_path = os.path.join(OUTPUT_DIR, name + ".wav")
         wav = engine.clone(target, ref_wav, ref_text, output_path=out_path)

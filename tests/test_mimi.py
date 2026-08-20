@@ -4,8 +4,8 @@ import sys
 import numpy as np
 import torch
 
-from vyvonext.core.tokens import TokenLayout, NUM_CODEBOOKS, CODEBOOK_SIZE, AUDIO_OFFSET
-from vyvonext.core.audio import MimiCodec
+from nar_tts.core.audio import MimiCodec
+from nar_tts.core.tokens import AUDIO_OFFSET, CODEBOOK_SIZE, NUM_CODEBOOKS, TokenLayout
 
 # A quick standalone sanity check — confirms the codec loads and the flatten/
 # unflatten layout in core/tokens.py matches what Mimi produces, before launching
@@ -43,7 +43,7 @@ def main():
     print(f"[encode] codes shape={codes.shape}  min={int(codes.min())} max={int(codes.max())}")
     assert codes.shape[0] == NUM_CODEBOOKS, codes.shape
     assert 0 <= codes.min() and codes.max() < CODEBOOK_SIZE, "code out of range"
-    expected_T = int(round(seconds * cfg.frame_rate))
+    expected_T = round(seconds * cfg.frame_rate)
     print(f"[encode] T_frames={codes.shape[-1]} (expected ~{expected_T})")
 
     rec = codec.decode(codes)

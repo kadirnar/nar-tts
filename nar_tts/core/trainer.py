@@ -1,11 +1,11 @@
 import torch
 import wandb
+from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.utils.data import DataLoader
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP, FullStateDictConfig, StateDictType)
 from transformers import Trainer
 
-from vyvonext.core.data import AlternatingDistributedSampler
+from nar_tts.core.data import AlternatingDistributedSampler
 
 
 class FSDPTrainer(Trainer):
@@ -49,7 +49,7 @@ class RatioTrainer(FSDPTrainer):
             return self.initial_ratio
         progress = min(self.state.global_step / self.total_steps, 1.0)
         ratio = self.initial_ratio - (self.initial_ratio - self.final_ratio) * progress
-        return max(int(round(ratio)), self.final_ratio)
+        return max(round(ratio), self.final_ratio)
 
     def get_train_dataloader(self):
         sampler = AlternatingDistributedSampler(

@@ -7,7 +7,9 @@ triton==3.6.0
 transformers==5.6.2
 accelerate==1.13.0
 datasets==4.8.4
-huggingface-hub==1.12.0
+# 1.26+ streams folder uploads through parallel hf-xet, batches commits, and
+# resumes interrupted transfers without re-uploading unchanged chunks.
+huggingface-hub==1.26.1
 safetensors==0.7.0
 tokenizers>=0.20
 

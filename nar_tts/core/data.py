@@ -78,7 +78,7 @@ class GradualRatioDataset(Dataset):
             return self.initial_ratio
         progress = min(self.current_step / self.total_steps, 1.0)
         ratio = self.initial_ratio - (self.initial_ratio - self.final_ratio) * progress
-        return max(int(round(ratio)), self.final_ratio)
+        return max(round(ratio), self.final_ratio)
 
     def __len__(self):
         return int(self.length)
