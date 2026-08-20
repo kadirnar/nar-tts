@@ -76,5 +76,5 @@ Emotion markup'ı eski checkpoint'e yeni yetenek kazandırmaz. Ağlamaklı konu�
 speech-laugh, kahkaha ve hıçkırık için etiketli expressive SFT gerekir. Codec,
 ses token düzeni veya özel kontrol tokenları değişirse tüm ses verisi yeniden
 encode edilmeli ve model yeniden eğitilmelidir. Bu nedenle alternatif codec,
-ECCD benzeri yeni decoder ve gerçek frame-level streaming mevcut checkpoint'e
-otomatik uygulanmaz; ayrı model nesli olarak ölçülmelidir.
+yeni decoder ve gerçek frame-level streaming mevcut checkpoint'e otomatik
+uygulanmaz; ayrı model nesli olarak ölçülmelidir.

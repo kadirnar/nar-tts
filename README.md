@@ -88,8 +88,8 @@ There is one quality-first GRPO config. LLaMA Factory is inference-only; its
 config is under `nar_tts/configs/llama_factory/` and no dataset registry is
 needed.
 
-See [quality](docs/quality.md), [emotion](docs/emotion.md),
-[GRPO](docs/grpo.md), and the [2026 TTS review](docs/tts_2026.md).
+See [quality](docs/quality.md), [emotion](docs/emotion.md), and
+[GRPO](docs/grpo.md).
 
 ## Credits
 

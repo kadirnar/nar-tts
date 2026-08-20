@@ -55,8 +55,7 @@ torchrun --standalone --nproc-per-node=8 \
 
 Do not evaluate only with the Qwen3-ASR model used for training. Use an
 independent ASR family, speaker-drift checks, multi-dimensional quality metrics,
-and listening tests. See the [2026 TTS research review](tts_2026.md) for the
-evidence and implementation priorities.
+and listening tests.
 
 ## LLaMA-Factory inference
 
