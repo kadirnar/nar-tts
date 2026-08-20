@@ -16,7 +16,7 @@ from nar_tts.core.trainer import RatioTrainer
 # Pretrain a Qwen3 + Mimi TTS model with a decaying text/speech mixture: a text-QA
 # stream keeps the LM's language ability while a speech stream teaches TTS, the mix
 # decaying from text-heavy toward pure speech. All knobs live in the YAML below.
-# Launch:  accelerate launch --config_file nar_tts/configs/accelerate_config.yaml \
+# Launch:  accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
 #                            -m nar_tts.training.pretrain
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pretrain.yaml"
 with open(CONFIG_PATH) as f:
@@ -73,6 +73,7 @@ training_args = TrainingArguments(
 trainer = RatioTrainer(
     model=model, args=training_args, train_dataset=train_dataset,
     data_collator=make_collator(cfg["pad_token"]),
+    processing_class=tokenizer,
     initial_ratio=initial_ratio, final_ratio=final_ratio)
 
 print(f"Pretraining: ratio {initial_ratio}:1 -> {final_ratio}:1, {total_steps} total steps")

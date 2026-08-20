@@ -1,0 +1,12 @@
+# Opposite LoRA acoustic direction for later interpolation/composition.
+extends: grpo_style_fast.yaml
+
+rewards:
+  speed:
+    direction: slow
+
+training:
+  output_dir: "checkpoints_grpo_style_slow"
+
+logging:
+  run_name: grpo-style-slow

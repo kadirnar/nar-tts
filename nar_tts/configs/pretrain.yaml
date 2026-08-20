@@ -7,7 +7,7 @@ tokenizer_name: "Qwen/Qwen3-0.6B"
 # Training
 epochs: 1
 batch_size: 8                # per device
-number_processes: 8          # = num GPUs (must match accelerate_config.yaml)
+number_processes: 8          # = num GPUs (must match configs/launch/fsdp.yaml)
 pad_token: 151643            # Qwen3 <|endoftext|> (collator pad value)
 save_steps: 10000
 learning_rate: 5.0e-5

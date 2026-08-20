@@ -1,0 +1,65 @@
+# One-GPU Unsloth LoRA adaptation after speech pretraining. Use a separate
+# Unsloth environment; this supervised stage does not load an ASR reward model.
+
+model:
+  checkpoint: "checkpoints/checkpoint-171622"
+  tokenizer: "checkpoints/checkpoint-171622"
+  loader: unsloth
+  revision: null
+  tokenizer_revision: null
+  dtype: bfloat16
+  trust_remote_code: false
+  use_liger_model: false
+  unsloth:
+    load_in_4bit: false
+    load_in_8bit: false
+    max_seq_length: 8192
+    device_map: null
+    gradient_checkpointing: unsloth
+  peft:
+    enabled: true
+    rank: 16
+    alpha: 32
+    dropout: 0.0
+    use_rslora: true
+    target_modules: all-linear
+    bias: none
+
+dataset:
+  path: parquet
+  data_files: "/scratch/kadirnar/elevenlabs-en-ft-mimi32/data/*.parquet"
+  split: train
+  streaming: false
+  max_samples: null
+  shuffle: true
+  seed: 42
+
+training:
+  output_dir: "checkpoints_ft_unsloth"
+  epochs: 10
+  max_steps: -1
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  weight_decay: 0.0
+  save_strategy: steps
+  save_steps: 100
+  save_total_limit: 3
+  logging_steps: 1
+  bf16: true
+  fp16: false
+  tf32: true
+  gradient_checkpointing: true
+  seed: 42
+  resume_from_checkpoint: null
+
+runtime:
+  dataloader_workers: auto
+  pin_memory: true
+
+logging:
+  report_to: wandb
+  project: nar-tts-finetune
+  run_name: sft-unsloth-lora

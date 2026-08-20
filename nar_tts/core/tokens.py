@@ -43,8 +43,19 @@ class TokenLayout:
 
     @classmethod
     def from_tokenizer(cls, tokenizer, num_codebooks=NUM_CODEBOOKS):
-        return cls(base=len(tokenizer), eot=tokenizer.eos_token_id,
-                   num_codebooks=num_codebooks)
+        vocab = tokenizer.get_vocab()
+        custom_zero = vocab.get("<custom_token_0>")
+        base = len(tokenizer) if custom_zero is None else int(custom_zero)
+        eot = tokenizer.eos_token_id
+        # GRPO saves an expanded tokenizer with EOS_SPEECH as its generation
+        # terminator and preserves the original text EOT as the pad token.
+        # Recover both original layout values when that artifact is reloaded.
+        if (
+                custom_zero is not None
+                and eot == base + EOS_SPEECH
+                and tokenizer.pad_token_id is not None):
+            eot = tokenizer.pad_token_id
+        return cls(base=base, eot=eot, num_codebooks=num_codebooks)
 
     # --- special tokens ---------------------------------------------------
     @property

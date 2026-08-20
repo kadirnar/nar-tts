@@ -1,6 +1,6 @@
 # Alternative pretraining config: Llama-3.2-1B instead of Qwen3.
 # Legacy / not the default. To use it, point CONFIG_PATH in pretrain.py here AND
-# set fsdp_transformer_layer_cls_to_wrap: LlamaDecoderLayer in accelerate_config.yaml.
+# set fsdp_transformer_layer_cls_to_wrap: LlamaDecoderLayer in launch/fsdp.yaml.
 
 # Model
 model_name: "meta-llama/Llama-3.2-1B-Instruct"

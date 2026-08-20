@@ -13,7 +13,14 @@ language (EN/JA). Built on the Orpheus recipe.
 git clone https://github.com/kadirnar/nar-tts.git
 cd nar-tts
 pip install -r requirements.txt            # Python 3.10, CUDA 12.x
+pip install -e .                           # installs Nar + vLLM plugin metadata
 hf auth login                               # once, for private pulls/pushes
+```
+
+Multi-reward speaker scoring uses the higher-quality WavLM-Large + ECAPA model:
+
+```bash
+pip install -e ".[speaker-quality]"
 ```
 
 ## Inference
@@ -147,13 +154,37 @@ Sanity-check the codec and token round-trip: `python -m tests.test_mimi`.
 
 ```bash
 # Pre-training (8-GPU FSDP; knobs in configs/pretrain.yaml)
-accelerate launch --config_file nar_tts/configs/accelerate_config.yaml \
+accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
                   -m nar_tts.training.pretrain
 
-# Fine-tuning on a single voice (set PRETRAINED_CKPT in training/finetune.py)
-accelerate launch --config_file nar_tts/configs/accelerate_config.yaml \
-                  -m nar_tts.training.finetune
+# Supervised post-training on a voice/domain (all knobs in configs/finetune.yaml)
+accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
+                  -m nar_tts.training.finetune \
+                  --config nar_tts/configs/finetune.yaml
+
+# Efficient one-GPU LoRA SFT in a separate Unsloth environment
+accelerate launch --config_file nar_tts/configs/launch/single_gpu.yaml \
+                  -m nar_tts.training.finetune \
+                  --config nar_tts/configs/finetune_unsloth.yaml
+
+# One-GPU GRPO: Qwen3-ASR-1.7B intelligibility + NLL + duration
+accelerate launch --config_file nar_tts/configs/launch/single_gpu.yaml \
+                  -m nar_tts.training.grpo \
+                  --config nar_tts/configs/grpo_intelligibility.yaml
+
+# Eight-GPU G=8 GRPO: Qwen3-ASR + WavLM-Large speaker + duration
+accelerate launch --config_file nar_tts/configs/launch/multi_gpu.yaml \
+                  -m nar_tts.training.grpo \
+                  --config nar_tts/configs/grpo_multireward.yaml
 ```
+
+GRPO rollouts are constrained to the correct 32-codebook Mimi grammar and use
+the same action space for policy/reference log-probabilities. Existing
+pretraining Parquet can be consumed directly without raw audio; text-only,
+voice-cloning, streaming, LoRA style, one-GPU, and multi-GPU scenarios are also
+supported. Transformers, vLLM, and SGLang rollout backends share that grammar;
+Unsloth LoRA SFT and a separate LLaMA-Factory SFT stage are included as well.
+See [the GRPO research and post-training guide](docs/grpo.md).
 
 ## Acknowledgements
 

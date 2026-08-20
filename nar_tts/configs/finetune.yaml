@@ -1,0 +1,50 @@
+# Supervised post-pretraining scenario: adapt the pretrained Nar checkpoint to a
+# high-quality voice/domain before (optionally) running one of the GRPO recipes.
+
+model:
+  checkpoint: "checkpoints/checkpoint-171622"
+  tokenizer: "checkpoints/checkpoint-171622"
+  revision: null
+  tokenizer_revision: null
+  dtype: bfloat16
+  attn_implementation: "kernels-community/flash-attn2"
+  use_liger_model: true
+
+dataset:
+  path: parquet
+  data_files: "/scratch/kadirnar/elevenlabs-en-ft-mimi32/data/*.parquet"
+  split: train
+  streaming: false
+  max_samples: null
+  shuffle: true
+  seed: 42
+
+training:
+  output_dir: "checkpoints_ft_elevenlabs_en"
+  epochs: 10
+  max_steps: -1
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  weight_decay: 0.0
+  save_strategy: steps
+  save_steps: 100
+  save_total_limit: 3
+  logging_steps: 1
+  bf16: true
+  fp16: false
+  tf32: true
+  gradient_checkpointing: false
+  seed: 42
+  resume_from_checkpoint: null
+
+runtime:
+  dataloader_workers: auto
+  pin_memory: true
+
+logging:
+  report_to: wandb
+  project: nar-tts-finetune
+  run_name: sft-elevenlabs-en

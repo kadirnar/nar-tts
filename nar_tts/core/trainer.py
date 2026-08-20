@@ -16,10 +16,15 @@ class FSDPTrainer(Trainer):
     """
     def save_model(self, output_dir=None, _internal_call=False):
         output_dir = output_dir or self.args.output_dir
+        if not isinstance(self.model, FSDP):
+            return super().save_model(output_dir, _internal_call=_internal_call)
         policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
         with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, policy):
             cpu_state_dict = self.model.state_dict()
-        self.model.save_pretrained(output_dir, state_dict=cpu_state_dict)
+        if self.args.should_save:
+            self.model.save_pretrained(output_dir, state_dict=cpu_state_dict)
+            if self.processing_class is not None:
+                self.processing_class.save_pretrained(output_dir)
 
 
 class RatioTrainer(FSDPTrainer):

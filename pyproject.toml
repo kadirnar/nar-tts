@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nar-tts"
+version = "0.1.0"
+description = "Qwen3 and Mimi non-autoregressive-codebook text-to-speech"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+speaker-quality = ["espnet", "espnet-model-zoo", "s3prl"]
+vllm = ["vllm"]
+sglang = ["sglang[all]"]
+unsloth = ["unsloth", "accelerate", "datasets", "PyYAML", "wandb"]
+
+[project.entry-points."vllm.logits_processors"]
+nar_audio_grammar = "nar_tts.integrations.vllm:NarAudioLogitsProcessor"
+
+[tool.setuptools.packages.find]
+include = ["nar_tts*"]
+
+[tool.setuptools.package-data]
+nar_tts = [
+  "configs/*.yaml",
+  "configs/launch/*.yaml",
+  "configs/llama_factory/*.yaml",
+]

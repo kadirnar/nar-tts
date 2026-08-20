@@ -1,0 +1,11 @@
+{
+  "nar_language_retention": {
+    "file_name": "language_retention.jsonl",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output"
+    }
+  }
+}

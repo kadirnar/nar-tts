@@ -1,0 +1,35 @@
+# Text-only GRPO, matching the central result that speech alignment does not
+# require paired audio after pretraining. Unspecified values inherit from the
+# practical one-GPU intelligibility scenario.
+extends: grpo_intelligibility.yaml
+
+dataset:
+  path: "YT-Data/ja-en-syn"
+  data_files: null
+  split: train
+  mode: text
+  columns:
+    input_ids: null
+    text: text
+    language: null
+  streaming: true
+  max_samples: 4000
+  max_prompt_tokens: 2048
+  shuffle: true
+  shuffle_buffer: 10000
+  on_invalid: drop
+
+rewards:
+  weights:
+    intelligibility: 1.0
+    speaker: 0.0
+    duration: 0.0
+    speed: 0.0
+    format: 0.0
+
+training:
+  output_dir: "checkpoints_grpo_text_streaming"
+  max_steps: 1000
+
+logging:
+  run_name: grpo-text-streaming-g4

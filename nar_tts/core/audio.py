@@ -260,3 +260,45 @@ class MimiCodec:
         arr = torch.as_tensor(np.asarray(codes), dtype=torch.long, device=self.device)
         wav = self.model.decode(arr.unsqueeze(0)).audio_values
         return wav.squeeze().cpu().to(torch.float32).numpy()
+
+    @torch.inference_mode()
+    def decode_batch(self, codes):
+        """Decode variable-length Mimi code arrays in one padded GPU batch.
+
+        Mimi's decoder has no padding-mask argument. Codes are therefore
+        right-padded for the batched forward and each waveform is trimmed back
+        to its exact frame-derived length. The decoder is causal, so padded tail
+        codes do not alter the retained prefix.
+        """
+        arrays = [np.asarray(item) for item in codes]
+        if not arrays:
+            return []
+        for array in arrays:
+            if array.ndim != 2 or array.shape[0] != self.num_codebooks:
+                raise ValueError(
+                    f"expected ({self.num_codebooks}, frames) codes, "
+                    f"got {array.shape!r}")
+            if array.shape[1] < 1:
+                raise ValueError("cannot decode an empty code sequence")
+
+        frame_counts = [array.shape[1] for array in arrays]
+        batch = torch.zeros(
+            (len(arrays), self.num_codebooks, max(frame_counts)),
+            dtype=torch.long, device=self.device)
+        for index, array in enumerate(arrays):
+            frames = array.shape[1]
+            batch[index, :, :frames] = torch.as_tensor(
+                array, dtype=torch.long, device=self.device)
+
+        audio = self.model.decode(batch).audio_values
+        if audio.ndim == 3 and audio.shape[1] == 1:
+            audio = audio[:, 0]
+        elif audio.ndim != 2:
+            raise RuntimeError(
+                f"unexpected Mimi decoder output shape: {tuple(audio.shape)}")
+        audio = audio.cpu().to(torch.float32).numpy()
+        return [
+            np.ascontiguousarray(
+                audio[index, :min(round(frames * self.hop), audio.shape[-1])])
+            for index, frames in enumerate(frame_counts)
+        ]

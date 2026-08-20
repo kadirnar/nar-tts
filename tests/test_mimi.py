@@ -48,6 +48,10 @@ def main():
 
     rec = codec.decode(codes)
     print(f"[decode] out len={rec.shape[0]}  snr_vs_input={snr_db(audio, rec):.2f} dB")
+    batched_rec = codec.decode_batch([codes, codes])
+    assert len(batched_rec) == 2 and all(item.shape == rec.shape for item in batched_rec)
+    max_batch_delta = max(float(np.max(np.abs(item - rec))) for item in batched_rec)
+    print(f"[decode-batch] 2 clips  max_delta_vs_single={max_batch_delta:.2e}")
 
     # codes <-> LM token ids round-trip via core/tokens.py
     layout = TokenLayout(base=151669, eot=151643)       # base only shifts ids uniformly

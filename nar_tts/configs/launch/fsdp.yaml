@@ -24,3 +24,4 @@ rdzv_backend: static
 same_network: true
 tpu_use_cluster: false
 use_cpu: false
+

@@ -1,0 +1,41 @@
+# Generic text SFT after Nar speech pretraining. Run this through
+# nar_tts.integrations.llama_factory in a separate LLaMA-Factory environment.
+model_name_or_path: checkpoints/checkpoint-171622
+trust_remote_code: false
+
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.0
+lora_target: all
+use_unsloth: true
+
+dataset: nar_language_retention
+dataset_dir: data/llama_factory
+template: qwen3_nothink
+cutoff_len: 4096
+max_samples: null
+overwrite_cache: false
+preprocessing_num_workers: auto
+dataloader_num_workers: auto
+
+output_dir: checkpoints_llama_factory_language_sft
+logging_steps: 1
+save_steps: 100
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: false
+report_to: wandb
+run_name: nar-language-retention-sft
+
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-5
+num_train_epochs: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+tf32: true
+ddp_timeout: 180000000
