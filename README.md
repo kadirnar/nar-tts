@@ -1,6 +1,6 @@
 # Nar TTS
 
-![Nar TTS waveform and speech-token synthesis](assets/nar-tts-hero.png)
+![Nar TTS layered audio waveform](assets/nar-tts-hero.png)
 
 Nar TTS combines a user-selected causal language model with Mimi speech tokens.
 It supports quality-gated inference, expressive controls, supervised training,
