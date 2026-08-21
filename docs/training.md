@@ -1,76 +1,77 @@
-# Eğitim sırası ve veri formatları
+# Training sequence and data formats
 
-## İlk ayar
+## Initial setup
 
-Eğitim dosyaları `nar_tts/configs/train/`, isteğe bağlı inference override'ı
-`nar_tts/configs/inference/` altındadır. Model adına özel config yoktur.
+Training configuration files live under `nar_tts/configs/train/`. Optional
+inference overrides live under `nar_tts/configs/inference/`. There are no
+model-specific configuration files.
 
-Tokenizer değerlerini göster:
+Display the tokenizer values:
 
 ```bash
 nar-tts inspect-tokenizer --model /path/to/base-model
 ```
 
-Çıktıdaki `text_eos_token_id` ve `suggested_pad_token_id` değerlerini
-`pretrain.yaml`, `finetune.yaml` ve `grpo.yaml` içindeki `tokens` bölümüne yaz.
-Her dosyada `REQUIRED` olarak işaretlenen model ve veri yollarını da doldur.
+Copy the reported `text_eos_token_id` and `suggested_pad_token_id` values into
+the `tokens` section of `pretrain.yaml`, `finetune.yaml`, and `grpo.yaml`. Also
+set every model and data path marked `REQUIRED` in those files.
 
-SFT için `model.loader`, `transformers` veya `unsloth` olabilir.
-`peft.enabled: true` iki yükleyicide de LoRA'yı açar; varsayılan tam eğitimdir.
+For SFT, `model.loader` may be either `transformers` or `unsloth`. Setting
+`peft.enabled: true` enables LoRA with either loader; full training is the
+default.
 
-## Eğitim sırası
+## Training sequence
 
-1. Ham sesi Mimi tokenlarına dönüştür:
+1. Convert raw audio to Mimi tokens:
 
    ```bash
    nar-tts preprocess --config nar_tts/configs/train/preprocess.yaml
    ```
 
-2. Base modeli text ve TTS verisiyle eğit:
+2. Train the base model with text and TTS data:
 
    ```bash
    accelerate launch --config_file nar_tts/configs/train/launch/fsdp.yaml \
      nar_tts/training/pretrain.py --config nar_tts/configs/train/pretrain.yaml
    ```
 
-3. İsteğe bağlı kaliteli SFT yap:
+3. Optionally run high-quality SFT:
 
    ```bash
    accelerate launch --config_file nar_tts/configs/train/launch/fsdp.yaml \
      nar_tts/training/finetune.py --config nar_tts/configs/train/finetune.yaml
    ```
 
-4. İsteğe bağlı kalite GRPO eğitimi yap:
+4. Optionally run quality-focused GRPO training:
 
    ```bash
    torchrun --standalone --nproc-per-node=8 \
      nar_tts/training/grpo.py --config nar_tts/configs/train/grpo.yaml
    ```
 
-Her aşamada checkpoint ile birlikte kaydedilen tokenizer bir sonraki aşamada
-kullanılmalıdır.
+At each stage, use the tokenizer saved with the previous stage's checkpoint.
 
-## Parquet formatları
+## Parquet formats
 
-Preprocess girdisinde `audio` ve `text` sütunları zorunludur. `audio`, Hugging
-Face Audio nesnesi veya dosya yolu olabilir.
+The preprocessing input requires `audio` and `text` columns. `audio` may be a
+Hugging Face Audio object or a file path.
 
-| Aşama | Zorunlu alan | İsteğe bağlı alanlar |
+| Stage | Required field | Optional fields |
 |---|---|---|
-| Text pretrain | `input_ids: list[int]` | yok |
-| TTS pretrain/SFT | `input_ids: list[int]` | `speaker`, `language`, `emotion`, `events` |
+| Text pretraining | `input_ids: list[int]` | None |
+| TTS pretraining/SFT | `input_ids: list[int]` | `speaker`, `language`, `emotion`, `events` |
 | GRPO `tts_tokens` | `input_ids: list[int]` | `language`, `emotion`, `intensity`, `delivery`, `events`, `hard_case` |
 
-`input_ids`, metin ve Mimi ses tokenlarını içeren tamamlanmış Nar dizisidir.
-Ham WAV dosyası eğitim sırasında tekrar okunmaz.
+`input_ids` is a complete Nar sequence containing text and Mimi speech tokens.
+The raw WAV file is not read again during training.
 
-Expressive JSONL girişi şu biçimdedir:
+Expressive JSONL input uses the following format:
 
 ```json
-{"audio":"voice.wav","text":"Merhaba","speaker":"spk1","language":"tr","emotion":"joy","intensity":0.8,"delivery":"speech_laugh","events":[{"type":"laugh","after_word":1}],"license":"owned"}
+{"audio":"voice.wav","text":"Hello","speaker":"spk1","language":"en","emotion":"joy","intensity":0.8,"delivery":"speech_laugh","events":[{"type":"laugh","after_word":1}],"license":"owned"}
 ```
 
-Bu dosyayı Parquet'e dönüştür:
+Convert this file to Parquet:
 
 ```bash
 nar-tts encode-expressive --manifest expressive.jsonl \
@@ -79,7 +80,7 @@ nar-tts encode-expressive --manifest expressive.jsonl \
 
 ## W&B
 
-Üç eğitim config'inde de `logging.enabled: true` ve `report_to: wandb` bulunur.
-İlk kullanımdan önce `wandb login` çalıştırılır.
-`project`, `run_name`, `entity`, `group`, `tags` ve `mode` alanları isteğe göre
-değiştirilebilir. W&B kapatılacaksa yalnızca `logging.enabled: false` yazılır.
+All three training configurations set `logging.enabled: true` and
+`report_to: wandb`. Run `wandb login` before the first use. Customize the
+`project`, `run_name`, `entity`, `group`, `tags`, and `mode` fields as needed.
+To disable W&B, set only `logging.enabled: false`.

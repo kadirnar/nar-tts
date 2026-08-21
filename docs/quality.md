@@ -1,81 +1,85 @@
-# Kalite sistemi
+# Quality system
 
-## Eklenenler
+## Included capabilities
 
-Nar artık tek inference yapılandırmasıyla şu akışı kullanır:
+Nar now uses the following workflow with a single inference configuration:
 
-1. Türkçe/İngilizce sayı, tarih, para, kısaltma ve kullanıcı sözlüğü
-   normalizasyonu.
-2. Aynı referans ses için içerik tabanlı Mimi token cache'i.
-3. Gerçek batch üretim ve KV cache.
-4. Önce iki aday; kalite kapısı geçilmezse toplam dört aday.
-5. Qwen3-ASR ödülünden bağımsız Whisper doğrulaması.
-6. Speaker similarity, CER, süre, clipping, sessizlik ve tekrar kontrolü.
-7. Kazanan WAV, bütün adaylar ve makine okunabilir JSON raporu.
-8. Uzun metinde cümle parçalama, önceki parçadan akustik bağlam ve crossfade.
+1. Turkish and English normalization for numbers, dates, currencies,
+   abbreviations, and user-defined lexicons.
+2. A content-addressed Mimi token cache for repeated reference audio.
+3. True batched generation and a KV cache.
+4. Two initial candidates, expanding to four only when the quality gate fails.
+5. Whisper verification independent of the Qwen3-ASR training reward.
+6. Checks for speaker similarity, CER, duration, clipping, silence, and
+   repetition.
+7. The winning WAV, every candidate, and a machine-readable JSON report.
+8. Sentence splitting for long text, acoustic context from the previous chunk,
+   and crossfading.
 
-Varsayılan ayarlar inference koduna gömülüdür. Kalıcı değişiklikler için isteğe
-bağlı [`override.yaml`](../nar_tts/configs/inference/override.yaml) kullanılabilir.
-Best-of-N ve doğrulama ek hesaplama yapar. JSON raporundaki `real_time_factor`
-hız/kalite deneylerini karşılaştırır.
+Default settings are embedded in the inference code. Use the optional
+[`override.yaml`](../nar_tts/configs/inference/override.yaml) for persistent
+changes. Best-of-N generation and verification require additional computation.
+Use `real_time_factor` in the JSON report to compare speed and quality
+experiments.
 
-## Veri döngüsü
+## Data loop
 
 ```text
-ham manifest
+raw manifest
   -> audit-data
   -> codec-check
   -> encode-expressive
   -> SFT
   -> GRPO
-  -> bağımsız evaluate + dinleme testi
+  -> independent evaluation + listening test
   -> hard cases / distill
-  -> sonraki SFT veya GRPO turu
+  -> next SFT or GRPO round
 ```
 
-`audit-data`; bozuk, duplicate, aşırı sessiz, clipping içeren ve metin/süre
-oranı şüpheli kayıtları ayırır. `encode-expressive`, `input_ids` yanında
-speaker, emotion, event, kaynak ve lisans alanlarını da Parquet'te tutar.
-Best-of-N raporlarından yalnız eşikleri geçen kazananlar `distill` ile yeni SFT
-manifestine alınır. Bu satırlar `hard_case=true` taşır ve GRPO'da daha sık
-örneklenebilir.
+`audit-data` separates corrupt and duplicate recordings, as well as recordings
+with excessive silence, clipping, or a suspicious text-to-duration ratio.
+Alongside `input_ids`, `encode-expressive` retains speaker, emotion, event,
+source, and license fields in the Parquet output. `distill` adds only winning
+Best-of-N samples that pass all thresholds to the new SFT manifest. These rows
+carry `hard_case=true` and can be sampled more frequently during GRPO.
 
 ## GRPO
 
-Tek [`grpo.yaml`](../nar_tts/configs/train/grpo.yaml) şu aktif bileşenleri ayrı ayrı
-prompt grubu içinde normalize eder:
+The single [`grpo.yaml`](../nar_tts/configs/train/grpo.yaml) normalizes the
+following active components independently within each prompt group:
 
 - Qwen3-ASR CER + ground-truth NLL
-- speaker similarity
-- süre tutarlılığı
-- teknik sinyal kalitesi
-- referansa göre kaba prosody uyumu
-- kayan pencerelerde speaker drift
+- Speaker similarity
+- Duration consistency
+- Technical signal quality
+- Coarse prosody alignment with the reference
+- Speaker drift over sliding windows
 
-Emotion ve non-verbal event reward kodu hazırdır, ancak ağırlığı sıfırdır.
-Sentetik Türkçe ses üzerinde bağımsız doğrulanmış classifier seçilmeden bu iki
-reward açılmamalıdır. Tek SER modelini başarı ölçütü ve reward olarak birlikte
-kullanmak reward hacking üretir.
+The emotion and non-verbal event reward implementations are ready, but their
+weights remain zero. Do not enable them until an independently validated
+classifier has been selected using synthetic Turkish speech. Using the same SER
+model as both the reward and the success metric encourages reward hacking.
 
-## Başarı ölçütü
+## Success criteria
 
-Her model sürümünde aynı sabit test kümesi kullanılmalıdır:
+Use the same fixed evaluation set for every model release:
 
-- Türkçe/İngilizce/Japonca CER ve WER
-- speaker similarity ve uzun-form speaker drift
-- p50/p95 RTF, VRAM ve ilk parça gecikmesi
-- clipping, sessizlik, tekrar ve truncation oranı
-- emotion doğruluğu, event F1 ve konum hatası
-- naturalness, emotion ve speaker için kör insan A/B testi
+- Turkish, English, and Japanese CER and WER
+- Speaker similarity and long-form speaker drift
+- p50/p95 RTF, VRAM, and time to first chunk
+- Clipping, silence, repetition, and truncation rates
+- Emotion accuracy, event F1, and position error
+- Blinded human A/B tests for naturalness, emotion, and speaker identity
 
-`technical_quality` bir sinyal kontrolüdür; MOS veya doğallık modeli değildir.
-Emotion classifier skoru da tek başına ürün kalitesi kanıtı değildir.
+`technical_quality` is a signal diagnostic, not a MOS or naturalness model. An
+emotion-classifier score alone is not evidence of product quality.
 
-## Yeniden eğitim gerektirenler
+## Changes that require retraining
 
-Emotion markup'ı eski checkpoint'e yeni yetenek kazandırmaz. Ağlamaklı konuşma,
-speech-laugh, kahkaha ve hıçkırık için etiketli expressive SFT gerekir. Codec,
-ses token düzeni veya özel kontrol tokenları değişirse tüm ses verisi yeniden
-encode edilmeli ve model yeniden eğitilmelidir. Bu nedenle alternatif codec,
-yeni decoder ve gerçek frame-level streaming mevcut checkpoint'e otomatik
-uygulanmaz; ayrı model nesli olarak ölçülmelidir.
+Emotion markup does not add new capabilities to an existing checkpoint.
+Crying speech, speech-laugh, laughter, and sobbing require labeled expressive
+SFT data. If the codec, speech-token layout, or special control tokens change,
+all speech data must be encoded again and the model must be retrained. For this
+reason, alternative codecs, a new decoder, and true frame-level streaming do
+not apply automatically to the current checkpoint; evaluate them as a separate
+model generation.

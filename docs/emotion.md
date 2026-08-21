@@ -1,21 +1,22 @@
-# Emotion ve non-verbal ses desteği
+# Emotion and non-verbal sound support
 
-## Kontroller
+## Controls
 
-Nar üç ayrı kontrol kullanır:
+Nar uses three independent controls:
 
 - Emotion: `neutral`, `joy`, `sadness`, `anger`, `fear`, `surprise`
-- Söyleyiş: `neutral`, `crying_speech`, `speech_laugh`
-- Olay: `laugh`, `chuckle`, `sob`, `cry`, `sniff`, `sigh`, `gasp`, `breath`
+- Delivery: `neutral`, `crying_speech`, `speech_laugh`
+- Event: `laugh`, `chuckle`, `sob`, `cry`, `sniff`, `sigh`, `gasp`, `breath`
 
-`speech_laugh` metnin kahkahalı okunmasını, `laugh` ise ayrı bir kahkaha
-olayını belirtir. `crying_speech` ve `sob` da ayrı etiketlenir.
+`speech_laugh` means that the text is spoken with laughter, while `laugh`
+represents a separate laughter event. Likewise, `crying_speech` and `sob` are
+annotated separately.
 
-## Örnek
+## Example
 
 ```json
 {
-  "text": "Bugün seni düşündüm.",
+  "text": "I thought of you today.",
   "emotion": "sadness",
   "intensity": 0.9,
   "delivery": "crying_speech",
@@ -23,34 +24,38 @@ olayını belirtir. `crying_speech` ve `sob` da ayrı etiketlenir.
 }
 ```
 
-Kontroller tokenizer değiştirmeyen metin işaretlerine dönüştürülür:
+The controls are rendered as text markup that does not modify the tokenizer:
 
 ```text
 <nar_control emotion=sadness intensity=0.900 delivery=crying_speech>
-Bugün <nar_event type=sob after_word=1 duration=short count=1> seni düşündüm.
+I <nar_event type=sob after_word=1 duration=short count=1> thought of you today.
 ```
 
-## Eğitim
+## Training
 
-1. `nar-tts codec-check` ile Mimi dönüşümünü kontrol et.
-2. `nar-tts audit-data` ile bozuk, tekrar veya lisansı eksik kayıtları ayır.
-3. Neutral ve expressive veriyi speaker/metin sızıntısı olmadan böl.
-4. `nar-tts encode-expressive` ile eğitim Parquet dosyasını üret.
-5. Neutral ve expressive kayıtları birlikte SFT eğitimine ver.
-6. Sabit test kümesi başarılıysa emotion/event GRPO ağırlıklarını aç.
+1. Check the Mimi round trip with `nar-tts codec-check`.
+2. Use `nar-tts audit-data` to separate corrupt, duplicate, or improperly
+   licensed recordings.
+3. Split neutral and expressive data without speaker or text leakage.
+4. Create the training Parquet file with `nar-tts encode-expressive`.
+5. Include both neutral and expressive recordings in SFT.
+6. Enable emotion and event GRPO weights only after the fixed evaluation set
+   passes its acceptance criteria.
 
-Veride emotion, intensity, delivery, event türü, konumu, süresi, speaker,
-dil, kaynak ve lisans alanları tutulmalıdır. Aynı metnin aynı speaker tarafından
-farklı emotion seviyelerinde okunması kontrolü daha belirgin hale getirir.
+Store emotion, intensity, delivery, event type, position, duration, speaker,
+language, source, and license metadata with each sample. Recordings of the same
+text by the same speaker at different emotion intensities make the control
+signal easier to learn.
 
-## Değerlendirme
+## Evaluation
 
-- Kontrol işaretleri çıkarıldıktan sonra WER/CER
-- Emotion ve intensity doğruluğu
-- Event türü, sayısı ve konumu için F1
-- Speaker similarity ve speaker drift
-- Neutral kalite gerilemesi
-- Kör insan A/B testi
+- WER/CER after removing control markup
+- Emotion and intensity accuracy
+- F1 for event type, count, and position
+- Speaker similarity and speaker drift
+- Neutral-quality regression
+- Blinded human A/B testing
 
-Mevcut checkpoint bu işaretleri öğrenmediği için tek başına ağlayarak veya
-kahkahalı okuyamaz. Bu özellikler için expressive SFT checkpoint'i gerekir.
+The current checkpoint has not learned this markup, so it cannot produce crying
+speech or laughter on its own. These capabilities require an expressive SFT
+checkpoint.
