@@ -11,4 +11,3 @@ num_processes: 1
 rdzv_backend: static
 same_network: true
 use_cpu: false
-

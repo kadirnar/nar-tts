@@ -1,7 +1,8 @@
 # Nar TTS
 
-Nar TTS is a Qwen3 + Mimi voice-cloning TTS project. It supports quality-gated
-batch inference, expressive controls, supervised training, and GRPO.
+Nar TTS combines a user-selected causal language model with Mimi speech tokens.
+It supports quality-gated inference, expressive controls, supervised training,
+and GRPO without model-specific config files.
 
 ## Install
 
@@ -22,11 +23,13 @@ pip install -e ".[evaluation]"
 
 ## Inference
 
-Set the checkpoint and device once in
-[`inference.yaml`](nar_tts/configs/inference.yaml), then run:
+Inference defaults are embedded in the code. Set the checkpoint on the command
+line; an optional [override file](nar_tts/configs/inference/override.yaml) is
+available for persistent changes.
 
 ```bash
 nar-tts infer \
+  --checkpoint checkpoints/latest \
   --text "Bugün güzel bir gün." \
   --reference reference.wav \
   --reference-text "Bu ses klibinin doğru metni." \
@@ -42,6 +45,7 @@ Emotion controls require a checkpoint trained with the same control schema:
 
 ```bash
 nar-tts infer \
+  --checkpoint checkpoints/latest \
   --text "Bugün seni çok özledim." \
   --reference reference.wav \
   --reference-text "Bu ses klibinin doğru metni." \
@@ -59,7 +63,7 @@ nar-tts audit-data --manifest raw.jsonl \
 nar-tts codec-check --audio "samples/*.wav" --output codec-report.json
 
 nar-tts encode-expressive --manifest clean.jsonl \
-  --output expressive.parquet
+  --output expressive.parquet --tokenizer /path/to/tokenizer
 
 nar-tts evaluate --manifest generations.jsonl \
   --output evaluation.json --listening-manifest listening.jsonl
@@ -68,28 +72,34 @@ nar-tts distill --reports "infer_out/*.json" \
   --output verified-sft.jsonl
 ```
 
-Existing large preprocessing jobs still use
-[`preprocess_pretrain.yaml`](nar_tts/configs/preprocess_pretrain.yaml).
+Raw speech preprocessing uses
+[`preprocess.yaml`](nar_tts/configs/train/preprocess.yaml):
+
+```bash
+nar-tts preprocess --config nar_tts/configs/train/preprocess.yaml
+```
 
 ## Training
 
 ```bash
-accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
-  nar_tts/training/pretrain.py
+nar-tts inspect-tokenizer --model /path/to/base-model
 
-accelerate launch --config_file nar_tts/configs/launch/fsdp.yaml \
-  nar_tts/training/finetune.py --config nar_tts/configs/finetune.yaml
+accelerate launch --config_file nar_tts/configs/train/launch/fsdp.yaml \
+  nar_tts/training/pretrain.py --config nar_tts/configs/train/pretrain.yaml
+
+accelerate launch --config_file nar_tts/configs/train/launch/fsdp.yaml \
+  nar_tts/training/finetune.py --config nar_tts/configs/train/finetune.yaml
 
 torchrun --standalone --nproc-per-node=8 \
-  nar_tts/training/grpo.py --config nar_tts/configs/grpo.yaml
+  nar_tts/training/grpo.py --config nar_tts/configs/train/grpo.yaml
 ```
 
-There is one quality-first GRPO config. LLaMA Factory is inference-only; its
-config is under `nar_tts/configs/llama_factory/` and no dataset registry is
-needed.
+Write the selected tokenizer's `text_eos_token_id` and `pad_token_id` into each
+training config before starting. All training stages support W&B through their
+`logging` section. A separate LLaMA Factory YAML is not needed for Nar inference.
 
-See [quality](docs/quality.md), [emotion](docs/emotion.md), and
-[GRPO](docs/grpo.md).
+See [training and datasets](docs/training.md), [quality](docs/quality.md),
+[emotion](docs/emotion.md), and [GRPO](docs/grpo.md).
 
 ## Credits
 

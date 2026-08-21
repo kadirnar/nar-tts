@@ -1,7 +1,7 @@
 # GRPO post-training
 
 Nar uses one quality-focused GRPO recipe:
-[`nar_tts/configs/grpo.yaml`](../nar_tts/configs/grpo.yaml). It optimizes Mimi
+[`configs/train/grpo.yaml`](../nar_tts/configs/train/grpo.yaml). It optimizes Mimi
 speech tokens with constrained generation. Each reward is normalized inside
 its own prompt group before the weighted sum:
 
@@ -31,7 +31,7 @@ the config without loading models:
 
 ```bash
 python nar_tts/training/grpo.py \
-  --config nar_tts/configs/grpo.yaml \
+  --config nar_tts/configs/train/grpo.yaml \
   --validate-only
 ```
 
@@ -40,7 +40,7 @@ Start training:
 ```bash
 torchrun --standalone --nproc-per-node=8 \
   nar_tts/training/grpo.py \
-  --config nar_tts/configs/grpo.yaml
+  --config nar_tts/configs/train/grpo.yaml
 ```
 
 ## Design rules
@@ -56,16 +56,3 @@ torchrun --standalone --nproc-per-node=8 \
 Do not evaluate only with the Qwen3-ASR model used for training. Use an
 independent ASR family, speaker-drift checks, multi-dimensional quality metrics,
 and listening tests.
-
-## LLaMA-Factory inference
-
-LLaMA-Factory is inference-only in this repository:
-
-```bash
-git clone --depth 1 https://github.com/hiyouga/LlamaFactory.git
-pip install -e ./LlamaFactory
-llamafactory-cli chat nar_tts/configs/llama_factory/inference.yaml
-```
-
-Use `llamafactory-cli api` with the same config for an API. Use `NarTTS` for
-constrained speech generation and Mimi waveform decoding.

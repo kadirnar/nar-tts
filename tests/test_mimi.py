@@ -54,7 +54,7 @@ def main():
     print(f"[decode-batch] 2 clips  max_delta_vs_single={max_batch_delta:.2e}")
 
     # codes <-> LM token ids round-trip via core/tokens.py
-    layout = TokenLayout(base=151669, eot=151643)       # base only shifts ids uniformly
+    layout = TokenLayout(base=100, eot=2)               # base only shifts IDs uniformly
     ids = layout.codes_to_ids(codes)
     rebuilt = layout.ids_to_codes(ids)
     assert np.array_equal(rebuilt, codes), "codes_to_ids / ids_to_codes mismatch"

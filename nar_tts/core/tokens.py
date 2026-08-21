@@ -21,7 +21,7 @@ class TokenLayout:
     LM then learns to *continue* text with audio tokens, which is what makes it
     a TTS model. Everything is an offset from the base text vocab:
 
-        base                = len(text tokenizer)             # e.g. Qwen3-0.6B
+        base                = len(text tokenizer)
         <custom_token_i>    = base + i                         # the added tokens
         SOS / EOS_SPEECH    = base + 1 / base + 2              # start / end of speech
         SOH / EOH / SOA     = base + 3 / base + 4 / base + 5   # turn markers
@@ -46,15 +46,24 @@ class TokenLayout:
         vocab = tokenizer.get_vocab()
         custom_zero = vocab.get("<custom_token_0>")
         base = len(tokenizer) if custom_zero is None else int(custom_zero)
-        eot = tokenizer.eos_token_id
-        # GRPO saves an expanded tokenizer with EOS_SPEECH as its generation
-        # terminator and preserves the original text EOT as the pad token.
-        # Recover both original layout values when that artifact is reloaded.
+        eot = getattr(tokenizer, "init_kwargs", {}).get(
+            "nar_text_eos_token_id", tokenizer.eos_token_id
+        )
+        # New checkpoints preserve the text EOS above. Recover it from padding
+        # as a compatibility fallback for older GRPO checkpoints.
         if (
-                custom_zero is not None
-                and eot == base + EOS_SPEECH
-                and tokenizer.pad_token_id is not None):
+            custom_zero is not None
+            and eot == base + EOS_SPEECH
+            and tokenizer.pad_token_id is not None
+        ):
             eot = tokenizer.pad_token_id
+        if eot is None:
+            raise ValueError("the tokenizer must define a text eos_token_id")
+        eot = int(eot)
+        if not 0 <= eot < base:
+            raise ValueError(
+                "the tokenizer text eos_token_id is outside its base vocabulary"
+            )
         return cls(base=base, eot=eot, num_codebooks=num_codebooks)
 
     # --- special tokens ---------------------------------------------------

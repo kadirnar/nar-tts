@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from nar_tts.core.config import user_token_ids
 from nar_tts.core.model_ids import QWEN3_ASR_MODEL_ID, WAVLM_SPEAKER_MODEL_ID
 from nar_tts.core.tokens import NUM_CODEBOOKS
 
@@ -69,9 +70,12 @@ def _required(config: dict, path: str):
 def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
     """Validate one post-training scenario and return useful derived values."""
     _required(config, "model.checkpoint")
-    _required(config, "model.tokenizer")
     _required(config, "dataset.path")
     _required(config, "training.output_dir")
+    try:
+        user_token_ids(config)
+    except (TypeError, ValueError) as error:
+        raise GRPOConfigError(str(error)) from error
     training = config.get("training", {})
     grpo = config.get("grpo", {})
     generation = config.get("generation", {})
@@ -150,9 +154,7 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
     )
     unknown_weights = sorted(set(weights) - set(reward_names))
     if unknown_weights:
-        raise GRPOConfigError(
-            "unknown reward weights: " + ", ".join(unknown_weights)
-        )
+        raise GRPOConfigError("unknown reward weights: " + ", ".join(unknown_weights))
     active_weights = {
         name: float(weights.get(name, 1.0 if name == "intelligibility" else 0.0))
         for name in reward_names
@@ -230,7 +232,10 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
         raise GRPOConfigError(
             "grpo.multi_objective_aggregation must be sum_then_normalize or normalize_then_sum"
         )
-    if len([weight for weight in active_weights.values() if weight > 0]) > 1 and aggregation != "normalize_then_sum":
+    if (
+        len([weight for weight in active_weights.values() if weight > 0]) > 1
+        and aggregation != "normalize_then_sum"
+    ):
         raise GRPOConfigError(
             "multi-reward Nar GRPO requires normalize_then_sum so components are normalized separately"
         )
@@ -260,8 +265,8 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
     model_loader = model.get("loader", "transformers")
     if model_loader != "transformers":
         raise GRPOConfigError(
-            "GRPO model.loader must be transformers; use finetune_unsloth.yaml "
-            "for Unsloth LoRA post-training in its separate environment"
+            "GRPO model.loader must be transformers; select loader: unsloth in "
+            "configs/train/finetune.yaml for supervised LoRA training"
         )
 
     if "use_vllm" in grpo:
@@ -271,9 +276,7 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
         )
     rollout_backend = rollout.get("backend", "transformers")
     if rollout_backend not in {"transformers", "vllm", "sglang"}:
-        raise GRPOConfigError(
-            "rollout.backend must be transformers, vllm, or sglang"
-        )
+        raise GRPOConfigError("rollout.backend must be transformers, vllm, or sglang")
     if rollout_backend == "vllm":
         vllm = rollout.get("vllm", {})
         if vllm.get("mode", "colocate") not in {"colocate", "server"}:
@@ -284,9 +287,7 @@ def validate_grpo_config(config: dict, world_size: int | None = None) -> dict:
                 "rollout.vllm.gpu_memory_utilization must be in (0, 1]"
             )
         if int(vllm.get("tensor_parallel_size", 1)) < 1:
-            raise GRPOConfigError(
-                "rollout.vllm.tensor_parallel_size must be positive"
-            )
+            raise GRPOConfigError("rollout.vllm.tensor_parallel_size must be positive")
     if rollout_backend == "sglang":
         sglang = rollout.get("sglang", {})
         for name in ("base_url", "adapter_sync_dir"):

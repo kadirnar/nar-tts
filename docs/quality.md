@@ -14,9 +14,10 @@ Nar artık tek inference yapılandırmasıyla şu akışı kullanır:
 7. Kazanan WAV, bütün adaylar ve makine okunabilir JSON raporu.
 8. Uzun metinde cümle parçalama, önceki parçadan akustik bağlam ve crossfade.
 
-Ana ayarlar [`inference.yaml`](../nar_tts/configs/inference.yaml) içindedir.
-En yüksek kalite varsayılandır; Best-of-N ve doğrulama bu nedenle ek hesaplama
-yapar. JSON raporundaki `real_time_factor` hız/kalite deneylerini karşılaştırır.
+Varsayılan ayarlar inference koduna gömülüdür. Kalıcı değişiklikler için isteğe
+bağlı [`override.yaml`](../nar_tts/configs/inference/override.yaml) kullanılabilir.
+Best-of-N ve doğrulama ek hesaplama yapar. JSON raporundaki `real_time_factor`
+hız/kalite deneylerini karşılaştırır.
 
 ## Veri döngüsü
 
@@ -41,7 +42,7 @@ manifestine alınır. Bu satırlar `hard_case=true` taşır ve GRPO'da daha sık
 
 ## GRPO
 
-Tek [`grpo.yaml`](../nar_tts/configs/grpo.yaml) şu aktif bileşenleri ayrı ayrı
+Tek [`grpo.yaml`](../nar_tts/configs/train/grpo.yaml) şu aktif bileşenleri ayrı ayrı
 prompt grubu içinde normalize eder:
 
 - Qwen3-ASR CER + ground-truth NLL

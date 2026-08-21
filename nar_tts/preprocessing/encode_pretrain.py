@@ -1,8 +1,8 @@
-"""Stream a Hub audio dataset through Qwen+Mimi and back to the Hub.
+"""Stream a Hub audio dataset through a selected tokenizer and Mimi.
 
 For the intended one-GPU run, three bounded stages overlap continuously:
 
-    download next shard -> CPU decode + Mimi/Qwen tokenize -> upload prior shards
+    download next shard -> CPU decode + text/Mimi tokenize -> upload prior shards
 
 No stage needs the complete source or encoded dataset on local disk. Source
 downloads use an owned ``local_dir`` instead of the global Hugging Face cache,
@@ -40,7 +40,7 @@ from nar_tts.preprocessing.hub_pipeline import (
 )
 
 DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "preprocess_pretrain.yaml"
+    Path(__file__).resolve().parents[1] / "configs" / "train" / "preprocess.yaml"
 )
 REMOTE_STATE_PATH = "nar-tts-run-state.json"
 ACTIVE_CONFIG_PATH = None
@@ -438,9 +438,9 @@ def dataset_card(source_revision=None, tokenizer_revision=None,
                  mimi_revision=None):
     return (
         "---\nlicense: apache-2.0\ntask_categories:\n- text-to-speech\n"
-        "language:\n- en\n- ja\nconfigs:\n- config_name: default\n"
+        "configs:\n- config_name: default\n"
         "  data_files:\n  - split: train\n    path: data/**/*.parquet\n"
-        "---\n\n# ja-en-syn-qwen3-mimi\n\n"
+        "---\n\n# Nar TTS encoded dataset\n\n"
         f"`{SRC_REPO}` encoded for Nar TTS: `{TOKENIZER_NAME}` text tokens "
         "+ Mimi audio tokens in the Orpheus prompt layout. Single column "
         "`input_ids`.\n\n"
@@ -764,7 +764,7 @@ def _run_locked():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Stream a speech dataset through Qwen+Mimi tokenization")
+        description="Stream a speech dataset through text and Mimi tokenization")
     parser.add_argument(
         "--config", default=str(DEFAULT_CONFIG_PATH),
         help="YAML run config (default: %(default)s)")

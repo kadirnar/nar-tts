@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -29,10 +30,127 @@ from nar_tts.inference.quality import (
     select_winners,
 )
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "inference.yaml"
-CKPT = "checkpoints/checkpoint-171622"
-TOKENIZER_NAME = "Qwen/Qwen3-0.6B"
 DEVICE = "cuda:0"
+
+DEFAULT_INFERENCE_CONFIG = {
+    "model": {
+        "checkpoint": "checkpoints/latest",
+        "tokenizer": None,
+        "revision": None,
+        "tokenizer_revision": None,
+        "device": DEVICE,
+        "dtype": "bfloat16",
+        "attn_implementation": "sdpa",
+        "trust_remote_code": False,
+        "low_cpu_mem_usage": True,
+    },
+    "tokens": {"text_eos_token_id": None, "pad_token_id": None},
+    "codec": {
+        "model": "kyutai/mimi",
+        "revision": None,
+        "dtype": "bfloat16",
+    },
+    "frontend": {
+        "language": None,
+        "expand_numbers": True,
+        "expand_abbreviations": True,
+        "lexicon": None,
+    },
+    "generation": {
+        "frame_rate": 12.5,
+        "min_audio_seconds": 0.4,
+        "max_audio_seconds": 30.0,
+        "batch_size": 4,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 0,
+        "repetition_penalty": 1.1,
+        "seed": 42,
+    },
+    "best_of_n": {"initial": 2, "maximum": 4},
+    "quality_gate": {
+        "require_asr": True,
+        "require_speaker": True,
+        "require_emotion": False,
+        "require_events": False,
+        "maximum_cer": 0.12,
+        "minimum_technical_quality": 0.55,
+        "maximum_repetition_similarity": 0.995,
+        "minimum_duration_ratio": 0.55,
+        "maximum_duration_ratio": 1.80,
+        "minimum_speaker_similarity": 0.45,
+        "minimum_emotion_confidence": 0.35,
+        "minimum_event_f1": 0.50,
+        "weights": {
+            "intelligibility": 0.50,
+            "technical": 0.20,
+            "duration": 0.10,
+            "speaker": 0.10,
+            "emotion": 0.05,
+            "event": 0.05,
+        },
+    },
+    "verification": {
+        "asr": {
+            "enabled": True,
+            "model": "openai/whisper-large-v3-turbo",
+            "revision": None,
+            "device": "auto",
+            "dtype": "bfloat16",
+            "batch_size": 4,
+            "language": None,
+            "attn_implementation": "sdpa",
+            "compile": False,
+            "compile_mode": "reduce-overhead",
+        },
+        "speaker": {
+            "enabled": True,
+            "backend": "espnet",
+            "model": "espnet/voxcelebs12_ecapa_wavlm_joint",
+            "revision": None,
+            "device": "auto",
+            "dtype": "float32",
+            "batch_size": 1,
+            "reference_cache_size": 256,
+        },
+        "emotion": {
+            "enabled": False,
+            "model": None,
+            "revision": None,
+            "device": "auto",
+            "label_map": {},
+        },
+        "events": {
+            "enabled": False,
+            "model": None,
+            "revision": None,
+            "device": "auto",
+            "label_map": {},
+            "window_seconds": 1.0,
+            "hop_seconds": 0.5,
+            "threshold": 0.35,
+        },
+    },
+    "acceleration": {
+        "kv_cache": True,
+        "tf32": True,
+        "compile_model": False,
+        "compile_codec": False,
+        "compile_mode": "reduce-overhead",
+    },
+    "cache": {"reference_entries": 64},
+    "long_form": {
+        "max_characters": 260,
+        "carry_previous_chunk": True,
+        "context_audio_seconds": 4.0,
+        "crossfade_milliseconds": 40.0,
+    },
+    "artifacts": {
+        "write_reports": True,
+        "save_candidates": True,
+        "hard_cases": "infer_out/hard_cases.jsonl",
+    },
+}
 
 
 def _merge(base: dict, override: Mapping) -> dict:
@@ -45,14 +163,19 @@ def _merge(base: dict, override: Mapping) -> dict:
     return output
 
 
-def load_inference_config(path=DEFAULT_CONFIG) -> dict:
+def load_inference_config(path=None) -> dict:
     import yaml
 
+    config = copy.deepcopy(DEFAULT_INFERENCE_CONFIG)
+    if path is None:
+        config["_config_path"] = None
+        return config
     path = Path(path).expanduser().resolve()
     with path.open(encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-    if not isinstance(config, dict):
+        override = yaml.safe_load(handle)
+    if not isinstance(override, dict):
         raise TypeError(f"{path} must contain a YAML mapping")
+    config = _merge(config, override)
     config["_config_path"] = os.fspath(path)
     return config
 
@@ -158,14 +281,32 @@ class NarTTS:
         self.config = settings
         self.torch = torch
         self.device = model_config.get("device", DEVICE)
-        checkpoint = model_config.get("checkpoint", CKPT)
-        tokenizer_name = model_config.get("tokenizer", checkpoint or TOKENIZER_NAME)
+        checkpoint = model_config.get("checkpoint")
+        if not checkpoint:
+            raise ValueError("set model.checkpoint or pass --checkpoint")
+        tokenizer_name = model_config.get("tokenizer") or checkpoint
         self.tok = AutoTokenizer.from_pretrained(
             tokenizer_name,
             revision=model_config.get("tokenizer_revision"),
             trust_remote_code=bool(model_config.get("trust_remote_code", False)),
         )
         self.layout = TokenLayout.from_tokenizer(self.tok)
+        token_config = settings.get("tokens", {})
+        expected_text_eos = token_config.get("text_eos_token_id")
+        if expected_text_eos is not None and int(expected_text_eos) != self.layout.eot:
+            raise ValueError(
+                "tokens.text_eos_token_id does not match the selected tokenizer"
+            )
+        expected_pad = token_config.get("pad_token_id")
+        if expected_pad is not None:
+            expected_pad = int(expected_pad)
+            if not 0 <= expected_pad < len(self.tok):
+                raise ValueError("tokens.pad_token_id is outside the tokenizer")
+            if self.tok.pad_token_id not in (None, expected_pad):
+                raise ValueError(
+                    "tokens.pad_token_id does not match the selected tokenizer"
+                )
+            self.tok.pad_token_id = expected_pad
         self.tok.padding_side = "left"
         if self.tok.pad_token_id is None:
             self.tok.pad_token_id = self.layout.eot

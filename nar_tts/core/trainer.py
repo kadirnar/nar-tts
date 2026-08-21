@@ -1,5 +1,3 @@
-import torch
-import wandb
 from torch.distributed.fsdp import FullStateDictConfig, StateDictType
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.utils.data import DataLoader
@@ -14,6 +12,7 @@ class FSDPTrainer(Trainer):
     FSDP shards the weights across GPUs; this gathers them to rank-0 on CPU and
     writes one ordinary `save_pretrained` checkpoint that inference can load.
     """
+
     def save_model(self, output_dir=None, _internal_call=False):
         output_dir = output_dir or self.args.output_dir
         if not isinstance(self.model, FSDP):
@@ -33,6 +32,7 @@ class RatioTrainer(FSDPTrainer):
     Feeds the live training step into GradualRatioDataset, uses the
     interleave-preserving sampler, and logs separate text/speech losses.
     """
+
     def __init__(self, *args, initial_ratio, final_ratio, **kwargs):
         super().__init__(*args, **kwargs)
         self.initial_ratio = initial_ratio
@@ -46,7 +46,9 @@ class RatioTrainer(FSDPTrainer):
     def _total_steps(self):
         per_epoch = len(self.train_dataset) // (
             self.args.per_device_train_batch_size
-            * self.args.gradient_accumulation_steps * self.args.world_size)
+            * self.args.gradient_accumulation_steps
+            * self.args.world_size
+        )
         return int(per_epoch * self.args.num_train_epochs)
 
     def current_ratio(self):
@@ -59,14 +61,20 @@ class RatioTrainer(FSDPTrainer):
     def get_train_dataloader(self):
         sampler = AlternatingDistributedSampler(
             self.train_dataset,
-            num_replicas=torch.distributed.get_world_size(),
-            rank=torch.distributed.get_rank())
+            num_replicas=self.args.world_size,
+            rank=self.args.process_index,
+        )
+        workers = int(self.args.dataloader_num_workers)
         return DataLoader(
             self.train_dataset,
             batch_size=self.args.per_device_train_batch_size,
-            sampler=sampler, collate_fn=self.data_collator,
+            sampler=sampler,
+            collate_fn=self.data_collator,
             drop_last=self.args.dataloader_drop_last,
-            num_workers=0, pin_memory=self.args.dataloader_pin_memory)
+            num_workers=workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            persistent_workers=workers > 0,
+        )
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         if hasattr(self.train_dataset, "set_current_step"):
@@ -74,15 +82,15 @@ class RatioTrainer(FSDPTrainer):
         return super().training_step(model, inputs, num_items_in_batch)
 
     def log(self, logs, start_time=None):
+        logs = dict(logs)
+        if "loss" in logs:
+            ratio = self.current_ratio()
+            logs["current_ratio"] = ratio
+            # Within each (ratio + 1)-step cycle the first `ratio` steps are text.
+            if self.state.global_step % (ratio + 1) < ratio:
+                logs["text_loss"] = logs["loss"]
+                self.text_step += 1
+            else:
+                logs["audio_loss"] = logs["loss"]
+                self.audio_step += 1
         super().log(logs, start_time)
-        if not (self.is_world_process_zero() and "loss" in logs):
-            return
-        ratio = self.current_ratio()
-        wandb.log({"current_ratio": ratio, "global_step": self.state.global_step})
-        # Within each (ratio + 1)-step cycle the first `ratio` steps are text.
-        if self.state.global_step % (ratio + 1) < ratio:
-            wandb.log({"text_loss": logs["loss"], "text_step": self.text_step})
-            self.text_step += 1
-        else:
-            wandb.log({"audio_loss": logs["loss"], "audio_step": self.audio_step})
-            self.audio_step += 1

@@ -5,20 +5,23 @@ import os
 from pathlib import Path
 
 import torch
-import yaml
 
+from nar_tts.core.config import (
+    apply_user_token_ids,
+    configure_reporting,
+    load_yaml_config,
+    user_token_ids,
+)
 from nar_tts.core.data import make_collator
 from nar_tts.training.grpo_config import dataloader_worker_count
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "finetune.yaml"
+DEFAULT_CONFIG = (
+    Path(__file__).resolve().parents[1] / "configs" / "train" / "finetune.yaml"
+)
 
 
 def _load_config(path):
-    with Path(path).expanduser().open(encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-    if not isinstance(config, dict):
-        raise TypeError("fine-tuning config must contain a YAML mapping")
-    return config
+    return load_yaml_config(path, "fine-tuning")
 
 
 def _dtype(name):
@@ -89,7 +92,7 @@ def _load_model_and_tokenizer(model_config, training, accelerator):
         except ImportError as error:
             raise ImportError(
                 "model.loader is unsloth, but Unsloth is not installed; use the "
-                "separate environment documented in docs/grpo.md"
+                "separate environment documented in docs/training.md"
             ) from error
         settings = model_config.get("unsloth", {})
         peft = model_config.get("peft", {})
@@ -97,15 +100,14 @@ def _load_model_and_tokenizer(model_config, training, accelerator):
         load_in_8bit = bool(settings.get("load_in_8bit", False))
         kwargs = {
             "model_name": model_config["checkpoint"],
-            "tokenizer_name": model_config.get(
-                "tokenizer", model_config["checkpoint"]
-            ),
+            "tokenizer_name": model_config.get("tokenizer")
+            or model_config["checkpoint"],
             "max_seq_length": int(settings.get("max_seq_length", 8192)),
             "dtype": _dtype(model_config.get("dtype", "bfloat16")),
             "load_in_4bit": load_in_4bit,
             "load_in_8bit": load_in_8bit,
             "load_in_16bit": not load_in_4bit and not load_in_8bit,
-            "full_finetuning": not peft.get("enabled", True),
+            "full_finetuning": not peft.get("enabled", False),
             "fast_inference": False,
             "trust_remote_code": bool(model_config.get("trust_remote_code", False)),
         }
@@ -122,12 +124,10 @@ def _load_model_and_tokenizer(model_config, training, accelerator):
         if settings.get("device_map") is not None:
             kwargs["device_map"] = settings["device_map"]
         model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-        if peft.get("enabled", True):
+        if peft.get("enabled", False):
             checkpointing = False
             if training.get("gradient_checkpointing", True):
-                checkpointing = settings.get(
-                    "gradient_checkpointing", "unsloth"
-                )
+                checkpointing = settings.get("gradient_checkpointing", "unsloth")
             model = FastLanguageModel.get_peft_model(
                 model,
                 r=int(peft.get("rank", 16)),
@@ -147,7 +147,9 @@ def _load_model_and_tokenizer(model_config, training, accelerator):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
-        model_config["tokenizer"], revision=model_config.get("tokenizer_revision")
+        model_config.get("tokenizer") or model_config["checkpoint"],
+        revision=model_config.get("tokenizer_revision"),
+        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
     )
     if tokenizer.eos_token_id is None:
         raise ValueError("the base tokenizer must define eos_token_id")
@@ -157,13 +159,32 @@ def _load_model_and_tokenizer(model_config, training, accelerator):
         model_class = AutoLigerKernelForCausalLM
     else:
         model_class = AutoModelForCausalLM
-    model_kwargs = {"dtype": _dtype(model_config.get("dtype", "bfloat16"))}
+    model_kwargs = {
+        "dtype": _dtype(model_config.get("dtype", "bfloat16")),
+        "trust_remote_code": bool(model_config.get("trust_remote_code", False)),
+    }
     for name in ("revision", "attn_implementation"):
         if model_config.get(name) is not None:
             model_kwargs[name] = model_config[name]
-    model = model_class.from_pretrained(
-        model_config["checkpoint"], **model_kwargs
-    ).to(accelerator.device)
+    model = model_class.from_pretrained(model_config["checkpoint"], **model_kwargs).to(
+        accelerator.device
+    )
+    peft = model_config.get("peft", {})
+    if peft.get("enabled", False):
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=int(peft.get("rank", 16)),
+                lora_alpha=int(peft.get("alpha", 32)),
+                lora_dropout=float(peft.get("dropout", 0.0)),
+                target_modules=peft.get("target_modules", "all-linear"),
+                bias=peft.get("bias", "none"),
+                use_rslora=bool(peft.get("use_rslora", True)),
+            ),
+        )
     return model, tokenizer
 
 
@@ -173,14 +194,12 @@ def train(config):
     training = config["training"]
     logging = config.get("logging", {})
     runtime = config.get("runtime", {})
+    user_token_ids(config)
     if (
         dataset_config.get("streaming", False)
         and int(training.get("max_steps", -1)) <= 0
     ):
         raise ValueError("streaming supervised fine-tuning requires training.max_steps")
-    if logging.get("project"):
-        os.environ.setdefault("WANDB_PROJECT", str(logging["project"]))
-
     # Unsloth must patch the ML stack before Transformers, TRL, or PEFT is
     # imported. Keep every import of those libraries below this point.
     if model_config.get("loader", "transformers") == "unsloth":
@@ -189,7 +208,7 @@ def train(config):
         except ImportError as error:
             raise ImportError(
                 "model.loader is unsloth, but Unsloth is not installed; use the "
-                "separate environment documented in docs/grpo.md"
+                "separate environment documented in docs/training.md"
             ) from error
 
     from accelerate import Accelerator
@@ -199,9 +218,10 @@ def train(config):
     from nar_tts.core.trainer import FSDPTrainer
 
     accelerator = Accelerator()
-    model, tokenizer = _load_model_and_tokenizer(
-        model_config, training, accelerator
-    )
+    model, tokenizer = _load_model_and_tokenizer(model_config, training, accelerator)
+    text_eos_token_id, pad_token_id = apply_user_token_ids(tokenizer, config)
+    model.config.eos_token_id = text_eos_token_id
+    model.config.pad_token_id = pad_token_id
     if tokenizer.eos_token_id is None:
         raise ValueError("the base tokenizer must define eos_token_id")
     if model.get_input_embeddings().num_embeddings != len(tokenizer):
@@ -234,7 +254,7 @@ def train(config):
         fp16=bool(training.get("fp16", False)),
         tf32=training.get("tf32", True),
         gradient_checkpointing=bool(training.get("gradient_checkpointing", False)),
-        report_to=logging.get("report_to", "wandb"),
+        report_to=configure_reporting(logging),
         run_name=logging.get("run_name"),
         remove_unused_columns=True,
         dataloader_num_workers=workers,
@@ -247,7 +267,7 @@ def train(config):
         model=model,
         args=args,
         train_dataset=train_dataset,
-        data_collator=make_collator(_padding_token_id(tokenizer)),
+        data_collator=make_collator(pad_token_id),
         processing_class=tokenizer,
     )
     if accelerator.is_local_main_process:

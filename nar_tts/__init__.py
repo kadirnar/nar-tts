@@ -1,1 +1,1 @@
-"""Nar TTS: Qwen language modeling with Mimi speech tokens."""
+"""Nar TTS: causal language modeling with Mimi speech tokens."""

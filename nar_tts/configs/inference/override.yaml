@@ -1,0 +1,26 @@
+# Optional overrides for `nar-tts infer`. Without --config, defaults embedded in
+# the inference code are used. This file is model-neutral.
+
+model:
+  checkpoint: checkpoints/latest
+  tokenizer: null                 # null = tokenizer saved with checkpoint
+  device: cuda:0
+  dtype: bfloat16
+
+tokens:
+  # Optional consistency checks. Fill these to reject a wrong tokenizer early.
+  text_eos_token_id: null
+  pad_token_id: null
+
+generation:
+  batch_size: 4
+  temperature: 0.7
+  top_p: 0.9
+
+best_of_n:
+  initial: 2
+  maximum: 4
+
+quality_gate:
+  maximum_cer: 0.12
+  minimum_speaker_similarity: 0.45

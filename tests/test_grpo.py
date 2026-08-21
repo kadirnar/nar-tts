@@ -74,6 +74,13 @@ class FakeSavedNarTokenizer:
         return {"<custom_token_0>": 10}
 
 
+class FakeSavedNarTokenizerWithSeparatePad(FakeSavedNarTokenizer):
+    pad_token_id = 7
+
+    def __init__(self):
+        self.init_kwargs = {"nar_text_eos_token_id": 2}
+
+
 class GenerationConstraintTest(unittest.TestCase):
     def setUp(self):
         self.layout = TokenLayout(base=10, eot=2, num_codebooks=2, codebook_size=4)
@@ -101,6 +108,11 @@ class GenerationConstraintTest(unittest.TestCase):
         layout = TokenLayout.from_tokenizer(FakeSavedNarTokenizer())
         self.assertEqual(layout.base, 10)
         self.assertEqual(layout.eot, 2)
+
+        separate_pad = TokenLayout.from_tokenizer(
+            FakeSavedNarTokenizerWithSeparatePad()
+        )
+        self.assertEqual(separate_pad.eot, 2)
 
     def test_logits_processor_follows_codebooks_and_frame_boundaries(self):
         processor = AudioTokenLogitsProcessor(
@@ -388,12 +400,28 @@ class RewardMathTest(unittest.TestCase):
 
 
 class ScenarioConfigTest(unittest.TestCase):
+    @staticmethod
+    def _config_path():
+        return (
+            Path(__file__).resolve().parents[1]
+            / "nar_tts"
+            / "configs"
+            / "train"
+            / "grpo.yaml"
+        )
+
+    @classmethod
+    def _config(cls):
+        config = load_grpo_config(cls._config_path())
+        config["tokens"] = {"text_eos_token_id": 2, "pad_token_id": 2}
+        return config
+
     def test_single_quality_grpo_config_validates(self):
-        config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
+        config_dir = self._config_path().parent
         paths = sorted(config_dir.glob("grpo*.yaml"))
         self.assertEqual([path.name for path in paths], ["grpo.yaml"])
 
-        config = load_grpo_config(paths[0])
+        config = self._config()
         derived = validate_grpo_config(config, world_size=8)
         self.assertGreater(derived["max_completion_length"], 1)
         self.assertEqual(config["grpo"]["num_generations"], 8)
@@ -420,24 +448,19 @@ class ScenarioConfigTest(unittest.TestCase):
         self.assertEqual(args.get_warmup_steps(1000), 30)
 
     def test_small_asr_checkpoint_is_rejected(self):
-        config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        config = load_grpo_config(config_dir / "grpo.yaml")
+        config = self._config()
         config["rewards"]["asr"]["model"] = "Qwen/Qwen3-ASR-0.6B-hf"
         with self.assertRaisesRegex(GRPOConfigError, "Qwen3-ASR-1.7B"):
             validate_grpo_config(config, world_size=8)
 
     def test_unsloth_is_kept_out_of_the_incompatible_grpo_environment(self):
-        config_dir = Path(__file__).resolve().parents[1] / "nar_tts" / "configs"
-        config = load_grpo_config(config_dir / "grpo.yaml")
+        config = self._config()
         config["model"]["loader"] = "unsloth"
-        with self.assertRaisesRegex(GRPOConfigError, "finetune_unsloth"):
+        with self.assertRaisesRegex(GRPOConfigError, "train/finetune.yaml"):
             validate_grpo_config(config, world_size=8)
 
     def test_invalid_group_size_fails_before_training(self):
-        config_path = (
-            Path(__file__).resolve().parents[1] / "nar_tts" / "configs" / "grpo.yaml"
-        )
-        config = load_grpo_config(config_path)
+        config = self._config()
         with self.assertRaises(GRPOConfigError):
             validate_grpo_config(config, world_size=1)
 

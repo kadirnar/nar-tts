@@ -36,7 +36,11 @@ def _control_from_args(args):
 
 def _infer(args):
     from nar_tts.evaluation.data_quality import read_jsonl
-    from nar_tts.inference.infer import NarTTS, SynthesisRequest
+    from nar_tts.inference.infer import (
+        NarTTS,
+        SynthesisRequest,
+        load_inference_config,
+    )
 
     if args.manifest:
         source = Path(args.manifest).resolve()
@@ -110,7 +114,17 @@ def _infer(args):
 
     if args.long_form and len(requests) != 1:
         raise ValueError("--long-form currently accepts one direct request")
-    engine = NarTTS(config=args.config)
+    settings = load_inference_config(args.config)
+    if args.text_eos_token_id is not None:
+        settings["tokens"]["text_eos_token_id"] = args.text_eos_token_id
+    if args.pad_token_id is not None:
+        settings["tokens"]["pad_token_id"] = args.pad_token_id
+    engine = NarTTS(
+        checkpoint=args.checkpoint,
+        tokenizer_name=args.tokenizer,
+        device=args.device,
+        config=settings,
+    )
     if args.long_form:
 
         def progress(index, result):
@@ -240,6 +254,44 @@ def _codec_check(args):
     return 0
 
 
+def _preprocess(args):
+    from nar_tts.preprocessing.encode_pretrain import main as preprocess_main
+
+    preprocess_main(["--config", args.config])
+    return 0
+
+
+def _inspect_tokenizer(args):
+    from transformers import AutoTokenizer
+
+    from nar_tts.core.tokens import TokenLayout
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        revision=args.revision,
+        trust_remote_code=args.trust_remote_code,
+    )
+    layout = TokenLayout.from_tokenizer(tokenizer)
+    print(
+        json.dumps(
+            {
+                "model": args.model,
+                "vocabulary_size": len(tokenizer),
+                "text_eos_token_id": layout.eot,
+                "pad_token_id": tokenizer.pad_token_id,
+                "suggested_pad_token_id": (
+                    tokenizer.pad_token_id
+                    if tokenizer.pad_token_id is not None
+                    else layout.eot
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def _parser():
     parser = argparse.ArgumentParser(
         prog="nar-tts", description="Nar TTS quality tools"
@@ -248,6 +300,11 @@ def _parser():
 
     infer = subparsers.add_parser("infer", help="voice cloning with adaptive Best-of-N")
     infer.add_argument("--config", default=None)
+    infer.add_argument("--checkpoint")
+    infer.add_argument("--tokenizer")
+    infer.add_argument("--device")
+    infer.add_argument("--text-eos-token-id", type=int)
+    infer.add_argument("--pad-token-id", type=int)
     infer.add_argument("--manifest", help="batch JSONL input")
     infer.add_argument("--output-dir")
     infer.add_argument("--text")
@@ -310,8 +367,9 @@ def _parser():
     )
     expressive.add_argument("--manifest", required=True)
     expressive.add_argument("--output", required=True)
-    expressive.add_argument("--tokenizer", default="Qwen/Qwen3-0.6B")
-    expressive.add_argument("--checkpoint")
+    expressive_model = expressive.add_mutually_exclusive_group(required=True)
+    expressive_model.add_argument("--tokenizer")
+    expressive_model.add_argument("--checkpoint")
     expressive.add_argument("--codec", default="kyutai/mimi")
     expressive.add_argument("--device", default="cuda:0")
     expressive.add_argument("--dtype", default="bfloat16")
@@ -330,6 +388,25 @@ def _parser():
     codec.add_argument("--num-codebooks", type=int, default=32)
     codec.add_argument("--batch-size", type=int, default=8)
     codec.set_defaults(handler=_codec_check)
+
+    preprocess = subparsers.add_parser(
+        "preprocess", help="encode raw speech into model-ready Parquet"
+    )
+    preprocess.add_argument(
+        "--config",
+        default=os.fspath(
+            Path(__file__).resolve().parent / "configs" / "train" / "preprocess.yaml"
+        ),
+    )
+    preprocess.set_defaults(handler=_preprocess)
+
+    inspect = subparsers.add_parser(
+        "inspect-tokenizer", help="print token IDs to copy into train configs"
+    )
+    inspect.add_argument("--model", required=True)
+    inspect.add_argument("--revision")
+    inspect.add_argument("--trust-remote-code", action="store_true")
+    inspect.set_defaults(handler=_inspect_tokenizer)
     return parser
 
 

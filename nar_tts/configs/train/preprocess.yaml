@@ -1,0 +1,61 @@
+# Raw Hub/local audio -> model-ready TTS Parquet.
+
+source:
+  repo: "owner/source-dataset"                  # REQUIRED
+  revision: null
+  local_root: null                               # optional local shard mirror
+
+target:
+  repo: "owner/encoded-dataset"                 # REQUIRED when push_to_hub=true
+  push_to_hub: true
+  private: false
+  output_root: "/path/to/encoded-output"         # REQUIRED
+  download_root: null
+
+hub:
+  token: null                                    # saved login or HF_TOKEN is preferred
+
+runtime:
+  num_gpus: 1
+  cpu_workers: auto
+  tokenizer_threads: 2
+  decode_backend: thread
+  decode_prefetch: auto
+  download_prefetch: 1
+
+tokenizer:
+  model: "/path/to/base-tokenizer"              # REQUIRED
+  revision: null
+
+mimi:
+  model: kyutai/mimi
+  revision: null
+  dtype: null
+  compile: false
+  compile_mode: default
+  allow_tf32: true
+
+tokenization:
+  gpu_batch_size: 32
+  bucket_size: 256
+  max_batch_seconds: 300
+  read_batch_size: 2048
+  row_group_size: 256
+  min_audio_seconds: 0.2
+  max_audio_seconds: 30.0
+
+transfer:
+  attempts: 5
+  delete_downloaded_source: true
+  keep_failed_downloads: false
+  delete_after_upload: true
+  hub_prefix_chars: 2
+  upload_batch_files: 64
+  upload_batch_gb: 8
+  upload_flush_seconds: 30
+  max_upload_staging_gb: 24
+
+resume:
+  reset_run_state: false
+  accept_remote_state_change: false
+  adopt_legacy_target: false

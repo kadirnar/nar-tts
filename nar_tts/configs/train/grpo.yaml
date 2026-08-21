@@ -1,24 +1,27 @@
-# One quality-first GRPO recipe with separately normalized speech metrics.
+# Nar checkpoint -> quality alignment. Main-model fields are architecture-neutral.
 
 model:
-  checkpoint: "checkpoints/checkpoint-171622"
-  tokenizer: "checkpoints/checkpoint-171622"
+  checkpoint: "/path/to/nar-checkpoint"          # REQUIRED
+  tokenizer: null                                 # null = use checkpoint
   loader: transformers
   revision: null
   tokenizer_revision: null
   dtype: bfloat16
   attn_implementation: sdpa
   trust_remote_code: false
-  low_cpu_mem_usage: true
+
+tokens:
+  text_eos_token_id: null                         # REQUIRED
+  pad_token_id: null                              # REQUIRED
 
 dataset:
   path: parquet
-  data_files: "/scratch/kadirnar/ja-en-syn-qwen3-mimi32/data/*.parquet"
+  data_files: "/path/to/grpo/*.parquet"           # REQUIRED
   split: train
   mode: tts_tokens
   columns:
     input_ids: input_ids
-    language: null
+    language: language
     target_duration_seconds: null
     emotion: emotion
     intensity: intensity
@@ -45,37 +48,21 @@ peft:
   target_modules: all-linear
   bias: none
 
-action_space:
-  constrain_log_probs: true
-
-rollout:
-  backend: transformers
-
 generation:
   frame_rate: 12.5
   min_audio_seconds: 0.4
   max_audio_seconds: 12.0
   temperature: 1.0
   top_p: 1.0
-  top_k: 0
-  repetition_penalty: 1.0
 
 grpo:
   num_generations: 8
-  num_generations_eval: 4
   generation_batch_size: 8
   beta: 0.1
-  num_iterations: 1
-  epsilon: 0.2
-  epsilon_high: 0.2
-  importance_sampling_level: token
-  # Normalize each metric per prompt group before the weighted sum.
   multi_objective_aggregation: normalize_then_sum
   scale_rewards: batch
   loss_type: dapo
   mask_truncated_completions: true
-  entropy_coef: 0.0
-  use_transformers_continuous_batching: false
 
 rewards:
   invalid_reward: 0.0
@@ -83,96 +70,63 @@ rewards:
     intelligibility: 0.60
     speaker: 0.15
     duration: 0.05
-    speed: 0.0
-    format: 0.0
     naturalness: 0.08
     prosody: 0.05
+    speaker_drift: 0.07
     emotion: 0.0
     event: 0.0
-    speaker_drift: 0.07
   codec:
     model: kyutai/mimi
-    revision: null
     device: auto
     dtype: bfloat16
   asr:
     enabled: true
     model: Qwen/Qwen3-ASR-1.7B-hf
-    revision: null
     device: auto
     dtype: bfloat16
     batch_size: 1
-    language: null
-    max_new_tokens: 256
     compile: true
     metric: cer
     error_weight: 0.6
-    error_alpha: 3.0
     nll_weight: 0.4
-    nll_alpha: 3.0
     nll_reduction: sum
   speaker:
     enabled: true
     backend: espnet
     model: espnet/voxcelebs12_ecapa_wavlm_joint
-    revision: null
     device: auto
     dtype: float32
-    batch_size: 1
     reference_cache_size: 2048
-    minimum: 0.0
   duration:
     mode: binary
     tolerance: [0.75, 1.25]
-    scale: 0.35
-  speed:
-    direction: fast
-    max_seconds: 12.0
   speaker_drift:
     enabled: true
     window_seconds: 2.5
     hop_seconds: 1.25
-  # These stay at weight 0 until a held-out Turkish synthetic-speech audit
-  # approves the selected classifiers. The reward implementation is ready.
   emotion:
     enabled: false
     model: null
-    revision: null
-    device: auto
-    label_map: {}
   event:
     enabled: false
     model: null
-    revision: null
-    device: auto
-    label_map: {}
-    window_seconds: 1.0
-    hop_seconds: 0.5
-    threshold: 0.35
 
 training:
-  output_dir: "checkpoints_grpo"
+  output_dir: checkpoints/grpo
   epochs: 1
   max_steps: -1
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 1
   learning_rate: 1.0e-5
-  lr_scheduler_type: cosine
   warmup_ratio: 0.03
-  weight_decay: 0.0
-  max_grad_norm: 1.0
-  optim: adamw_torch_fused
+  lr_scheduler_type: cosine
+  save_steps: 100
+  save_total_limit: 3
+  logging_steps: 1
   bf16: true
   fp16: false
   tf32: true
   gradient_checkpointing: true
-  gradient_checkpointing_kwargs:
-    use_reentrant: false
-  use_liger_kernel: false
-  logging_steps: 1
-  save_strategy: steps
-  save_steps: 100
-  save_total_limit: 3
   seed: 42
   resume_from_checkpoint: null
 
@@ -185,7 +139,10 @@ logging:
   enabled: true
   report_to: wandb
   project: nar-tts-grpo
-  run_name: grpo-quality-g8
+  run_name: grpo
   entity: null
+  group: null
+  tags: []
+  mode: online
   log_completions: true
   num_completions_to_print: 2

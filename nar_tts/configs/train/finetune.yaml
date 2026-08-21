@@ -1,15 +1,16 @@
-# One-GPU Unsloth LoRA adaptation after speech pretraining. Use a separate
-# Unsloth environment; this supervised stage does not load an ASR reward model.
+# Nar checkpoint -> supervised adaptation. This one file supports Transformers
+# and Unsloth; change model.loader instead of creating a model-specific YAML.
 
 model:
-  checkpoint: "checkpoints/checkpoint-171622"
-  tokenizer: "checkpoints/checkpoint-171622"
-  loader: unsloth
+  checkpoint: "/path/to/nar-checkpoint"         # REQUIRED
+  tokenizer: null                                # null = use checkpoint
+  loader: transformers                           # transformers or unsloth
   revision: null
   tokenizer_revision: null
   dtype: bfloat16
+  attn_implementation: sdpa
   trust_remote_code: false
-  use_liger_model: false
+  use_liger_model: true
   unsloth:
     load_in_4bit: false
     load_in_8bit: false
@@ -17,7 +18,7 @@ model:
     device_map: null
     gradient_checkpointing: unsloth
   peft:
-    enabled: true
+    enabled: false                                # true = LoRA for either loader
     rank: 16
     alpha: 32
     dropout: 0.0
@@ -25,9 +26,13 @@ model:
     target_modules: all-linear
     bias: none
 
+tokens:
+  text_eos_token_id: null                         # REQUIRED
+  pad_token_id: null                              # REQUIRED
+
 dataset:
   path: parquet
-  data_files: "/scratch/kadirnar/elevenlabs-en-ft-mimi32/data/*.parquet"
+  data_files: "/path/to/sft/*.parquet"            # REQUIRED
   split: train
   streaming: false
   max_samples: null
@@ -35,7 +40,7 @@ dataset:
   seed: 42
 
 training:
-  output_dir: "checkpoints_ft_unsloth"
+  output_dir: checkpoints/finetune
   epochs: 10
   max_steps: -1
   batch_size: 8
@@ -51,7 +56,7 @@ training:
   bf16: true
   fp16: false
   tf32: true
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   seed: 42
   resume_from_checkpoint: null
 
@@ -60,6 +65,11 @@ runtime:
   pin_memory: true
 
 logging:
+  enabled: true
   report_to: wandb
   project: nar-tts-finetune
-  run_name: sft-unsloth-lora
+  run_name: finetune
+  entity: null
+  group: null
+  tags: []
+  mode: online

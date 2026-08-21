@@ -1,0 +1,67 @@
+# Base language model -> Nar speech-token pretraining.
+# Set every value marked REQUIRED before launching.
+
+model:
+  checkpoint: "/path/to/base-causal-lm"       # REQUIRED
+  tokenizer: null                              # null = use checkpoint
+  revision: null
+  tokenizer_revision: null
+  dtype: bfloat16
+  attn_implementation: sdpa
+  trust_remote_code: false
+  use_liger_model: true
+
+tokens:
+  # Read these IDs from the selected tokenizer. Nar never guesses model-specific IDs.
+  text_eos_token_id: null                       # REQUIRED
+  pad_token_id: null                            # REQUIRED; may equal text_eos_token_id
+
+dataset:
+  # Both datasets contain one `input_ids: list[int]` column.
+  text:
+    path: parquet
+    data_files: "/path/to/text-qa/*.parquet"    # REQUIRED
+    split: train
+  speech:
+    path: parquet
+    data_files: "/path/to/tts-tokens/*.parquet" # REQUIRED
+    split: train
+  shuffle: true
+  seed: 42
+
+mix:
+  initial_text_batches_per_speech: 1
+  final_text_batches_per_speech: 0
+
+training:
+  output_dir: checkpoints/pretrain
+  epochs: 1
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  save_steps: 1000
+  save_total_limit: 3
+  logging_steps: 1
+  bf16: true
+  fp16: false
+  tf32: true
+  gradient_checkpointing: false
+  seed: 42
+  resume_from_checkpoint: null
+
+runtime:
+  dataloader_workers: 0
+  pin_memory: true
+
+logging:
+  enabled: true
+  report_to: wandb
+  project: nar-tts-pretrain
+  run_name: pretrain
+  entity: null
+  group: null
+  tags: []
+  mode: online

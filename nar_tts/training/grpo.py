@@ -3,7 +3,7 @@
 Launch with the checked-in eight-GPU recipe::
 
     torchrun --standalone --nproc-per-node=8 \
-        nar_tts/training/grpo.py --config nar_tts/configs/grpo.yaml
+        nar_tts/training/grpo.py --config nar_tts/configs/train/grpo.yaml
 """
 
 import argparse
@@ -18,6 +18,7 @@ from peft import LoraConfig, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from trl import GRPOConfig
 
+from nar_tts.core.config import apply_user_token_ids, configure_reporting
 from nar_tts.core.tokens import EOS_SPEECH, TokenLayout
 from nar_tts.integrations.vllm import GRAMMAR_ARGUMENT, audio_grammar_arguments
 from nar_tts.training.grpo_config import (
@@ -29,9 +30,7 @@ from nar_tts.training.grpo_data import load_grpo_dataset
 from nar_tts.training.grpo_rewards import SpeechRewardSuite
 from nar_tts.training.grpo_trainer import NarGRPOTrainer
 
-DEFAULT_CONFIG = (
-    Path(__file__).resolve().parents[1] / "configs" / "grpo.yaml"
-)
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "train" / "grpo.yaml"
 
 
 def _dtype(name):
@@ -44,11 +43,13 @@ def _dtype(name):
 
 
 def _prepare_tokenizer(config: dict):
+    model_config = config["model"]
     tokenizer = AutoTokenizer.from_pretrained(
-        config["tokenizer"],
-        revision=config.get("tokenizer_revision"),
-        trust_remote_code=bool(config.get("trust_remote_code", False)),
+        model_config.get("tokenizer") or model_config["checkpoint"],
+        revision=model_config.get("tokenizer_revision"),
+        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
     )
+    _, configured_pad_token_id = apply_user_token_ids(tokenizer, config)
     layout = TokenLayout.from_tokenizer(tokenizer)
     original_eot = layout.eot
     if original_eot is None:
@@ -74,7 +75,7 @@ def _prepare_tokenizer(config: dict):
             )
 
     tokenizer.padding_side = "left"
-    tokenizer.pad_token_id = original_eot
+    tokenizer.pad_token_id = configured_pad_token_id
     tokenizer.eos_token = f"<custom_token_{EOS_SPEECH}>"
     if tokenizer.eos_token_id != layout.eos_speech:
         raise ValueError("failed to assign EOS_SPEECH as the rollout terminator")
@@ -104,11 +105,11 @@ def _load_model(config: dict, tokenizer, layout: TokenLayout):
             "checkpoint LM head does not match the expanded Nar vocabulary"
         )
     model.config.eos_token_id = layout.eos_speech
-    model.config.pad_token_id = layout.eot
+    model.config.pad_token_id = tokenizer.pad_token_id
     model.config.use_cache = False
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.eos_token_id = layout.eos_speech
-        model.generation_config.pad_token_id = layout.eot
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
     return model
 
 
@@ -171,9 +172,7 @@ def _training_args(
     workers = dataloader_worker_count(
         runtime.get("dataloader_workers", "auto"), world_size=world_size
     )
-    report_to = logging.get(
-        "report_to", "wandb" if logging.get("enabled", True) else "none"
-    )
+    report_to = configure_reporting(logging)
     if isinstance(report_to, str) and report_to != "none":
         report_to = [report_to]
 
@@ -283,9 +282,7 @@ def _training_args(
             {
                 "vllm_mode": vllm.get("mode", "colocate"),
                 "vllm_model_impl": vllm.get("model_impl", "vllm"),
-                "vllm_enable_sleep_mode": bool(
-                    vllm.get("enable_sleep_mode", False)
-                ),
+                "vllm_enable_sleep_mode": bool(vllm.get("enable_sleep_mode", False)),
                 "vllm_server_base_url": vllm.get("server_base_url"),
                 "vllm_server_host": vllm.get("server_host", "0.0.0.0"),
                 "vllm_server_port": int(vllm.get("server_port", 8000)),
@@ -295,9 +292,7 @@ def _training_args(
                     vllm.get("gpu_memory_utilization", 0.3)
                 ),
                 "vllm_max_model_length": vllm.get("max_model_length"),
-                "vllm_tensor_parallel_size": int(
-                    vllm.get("tensor_parallel_size", 1)
-                ),
+                "vllm_tensor_parallel_size": int(vllm.get("tensor_parallel_size", 1)),
                 "vllm_importance_sampling_correction": bool(
                     vllm.get("importance_sampling_correction", True)
                 ),
@@ -329,14 +324,9 @@ def train(config: dict):
     actual_world_size = int(os.environ.get("WORLD_SIZE", "1"))
     derived = validate_grpo_config(config, world_size=actual_world_size)
     training = config["training"]
-    logging = config.get("logging", {})
-    if logging.get("project"):
-        os.environ.setdefault("WANDB_PROJECT", str(logging["project"]))
-    if logging.get("entity"):
-        os.environ.setdefault("WANDB_ENTITY", str(logging["entity"]))
     set_seed(int(training.get("seed", 42)))
 
-    tokenizer, layout = _prepare_tokenizer(config["model"])
+    tokenizer, layout = _prepare_tokenizer(config)
     dataset_config = copy.deepcopy(config["dataset"])
     dataset_config.setdefault(
         "frame_rate", config.get("generation", {}).get("frame_rate", 12.5)
@@ -351,9 +341,7 @@ def train(config: dict):
     )
     rewards = SpeechRewardSuite(layout, reward_config)
     reward_functions, _ = rewards.reward_functions()
-    args = _training_args(
-        config, derived, tokenizer, actual_world_size, layout=layout
-    )
+    args = _training_args(config, derived, tokenizer, actual_world_size, layout=layout)
     rollout_func = None
     rollout_backend = derived["rollout_backend"]
     if rollout_backend == "vllm":
